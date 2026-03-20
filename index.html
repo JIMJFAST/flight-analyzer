@@ -425,7 +425,8 @@ function parseLog(buffer, onProgress) {
     'BAT','ESC','CTUN','ATT','VIBE','RCOU','GPS','RATE',
     'MOTB','BARO','MODE','PARM','MSG','RCIN','POWR',
     'BCL','IMU','EV','VER','PSCD','CMD',
-    'NTUN','ARSP','PIDR','PIDP','STAT'
+    'NTUN','ARSP','PIDR','PIDP','STAT',
+    'ERR','XKF4','NKF4','MAG','ARM'
   ]);
 
   // First, register FMT type 128
@@ -1200,6 +1201,240 @@ function calcTuning(data, phases, mission, params) {
 
 
 // ============================================================
+// ERROR, EVENT, MSG, EKF, COMPASS, POWER DECODERS
+// ============================================================
+
+// ERR subsystem + error code decoder (from AP_Logger.h)
+const ERR_SUBSYS = {
+  1:'Main',2:'Radio',3:'Compass',5:'Failsafe: Radio',6:'Failsafe: Battery',
+  7:'Failsafe: GPS',8:'Failsafe: GCS Link',9:'Failsafe: Fence',10:'Flight Mode',
+  11:'GPS',12:'Crash Check',13:'Flip',15:'Parachute',16:'EKF Check',
+  17:'Failsafe: EKF',18:'Barometer',19:'CPU',20:'Failsafe: ADS-B',
+  21:'Terrain',22:'Navigation',23:'Failsafe: Terrain',24:'EKF Primary Changed',
+  25:'Thrust Loss',26:'Failsafe: Sensors',27:'Failsafe: Leak',
+  28:'Pilot Input',29:'Failsafe: Vibration',30:'Internal Error',31:'Failsafe: Dead Reckoning'
+};
+const ERR_CODES = {
+  0:'Resolved', 1:'Occurred/Failed to Init', 2:'Bad Variance/Glitch/Crash/Abandoned',
+  3:'Loss of Control/Parachute Landed', 4:'Unhealthy', 5:'Dest Outside Fence', 6:'RTL Missing Rangefinder'
+};
+
+// EV event ID decoder (from AP_Logger.h LogEvent enum)
+const EV_NAMES = {
+  10:'Armed',11:'Disarmed',15:'Auto Armed',17:'Land Complete (Maybe)',18:'Land Complete',
+  19:'Lost GPS',21:'Flip Start',22:'Flip End',25:'Set Home',26:'Simple Mode ON',
+  27:'Simple Mode OFF',28:'Not Landed',29:'Super Simple ON',
+  30:'AutoTune Init',31:'AutoTune Off',32:'AutoTune Restart',33:'AutoTune Success',
+  34:'AutoTune Failed',35:'AutoTune Reached Limit',36:'AutoTune Pilot Testing',
+  37:'AutoTune Saved Gains',38:'Save Trim',39:'Save Waypoint',
+  41:'Fence Enable',42:'Fence Disable',43:'Acro Trainer Off',
+  44:'Acro Trainer Leveling',45:'Acro Trainer Limited',
+  46:'Gripper Grab',47:'Gripper Release',
+  49:'Parachute Disabled',50:'Parachute Enabled',51:'Parachute Released',
+  52:'Landing Gear Deployed',53:'Landing Gear Retracted',
+  54:'Motors Emergency Stop',55:'Motors Emergency Stop Cleared',
+  56:'Motors Interlock Disabled',57:'Motors Interlock Enabled',
+  58:'Rotor Runup Complete',59:'Rotor Speed Below Critical',
+  60:'EKF Altitude Reset',61:'Land Cancelled by Pilot',62:'EKF Yaw Reset',
+  63:'ADS-B Avoidance Enable',64:'ADS-B Avoidance Disable',
+  65:'Proximity Avoidance Enable',66:'Proximity Avoidance Disable',
+  67:'GPS Primary Changed',71:'ZigZag Store A',72:'ZigZag Store B',
+  73:'Land Reposition Active',74:'Standby Enable',75:'Standby Disable',
+  76:'Fence Alt Max Enable',77:'Fence Alt Max Disable',
+  78:'Fence Circle Enable',79:'Fence Circle Disable',
+  80:'Fence Alt Min Enable',81:'Fence Alt Min Disable',
+  82:'Fence Polygon Enable',83:'Fence Polygon Disable',
+  85:'EK3 Sources: Primary',86:'EK3 Sources: Secondary',87:'EK3 Sources: Tertiary',
+  90:'Airspeed Primary Changed',163:'Surfaced',164:'Not Surfaced',165:'Bottomed',166:'Not Bottomed'
+};
+
+function calcAlerts(data) {
+  const alerts = [];
+  const err = data.ERR || [];
+  const ev = data.EV || [];
+  const msg = data.MSG || [];
+  const powr = data.POWR || [];
+  const xkf4 = data.XKF4 || data.NKF4 || [];
+  const mag = data.MAG || [];
+  const ctun = data.CTUN || [];
+  const bat = data.BAT || [];
+
+  // --- ERROR / FAILSAFE DECODER ---
+  const errors = [];
+  for (const e of err) {
+    const subsys = e.Subsys !== undefined ? e.Subsys : e.Sub;
+    const code = e.ECode !== undefined ? e.ECode : e.Code;
+    const subsysName = ERR_SUBSYS[subsys] || `Unknown(${subsys})`;
+    const codeName = ERR_CODES[code] || `Code ${code}`;
+    const isCritical = [5,6,8,9,12,16,17,25,29].includes(subsys);
+    errors.push({
+      timeUS: e.TimeUS, subsys, code, subsysName, codeName,
+      status: code === 0 ? 'resolved' : (isCritical ? 'critical' : 'warning'),
+      desc: `${subsysName}: ${codeName}`
+    });
+  }
+
+  // --- EVENT TIMELINE ---
+  const events = [];
+  for (const e of ev) {
+    const id = e.Id !== undefined ? e.Id : e.Event;
+    events.push({
+      timeUS: e.TimeUS,
+      id,
+      name: EV_NAMES[id] || `Event ${id}`,
+      isCritical: [19,51,54,59].includes(id) // GPS lost, parachute, emergency stop, rotor critical
+    });
+  }
+
+  // --- FC MESSAGES ---
+  const fcMessages = [];
+  for (const m of msg) {
+    const text = m.Message || '';
+    fcMessages.push({
+      timeUS: m.TimeUS,
+      text,
+      isWarning: /fail|error|bad|critical|crash|lost|emergency/i.test(text),
+      isInfo: /version|frame|gps.*detected|ekf.*complete|new mission/i.test(text)
+    });
+  }
+
+  // --- EKF HEALTH ---
+  let ekfHealth = null;
+  if (xkf4.length > 0) {
+    // Only look at core 0 (primary EKF)
+    const core0 = xkf4.filter(x => (x.C === 0 || x.C === undefined));
+    const src = core0.length > 0 ? core0 : xkf4;
+    const svMax = max(src.map(x => x.SV || 0));
+    const spMax = max(src.map(x => x.SP || 0));
+    const shMax = max(src.map(x => x.SH || 0));
+    const smMax = max(src.map(x => x.SM || 0));
+    const svAvg = avg(src.map(x => x.SV || 0));
+    const spAvg = avg(src.map(x => x.SP || 0));
+    const shAvg = avg(src.map(x => x.SH || 0));
+    const smAvg = avg(src.map(x => x.SM || 0));
+
+    let ekfStatus = 'good', ekfBadge = 'badge-good';
+    const worst = Math.max(svMax, spMax, shMax, smMax);
+    if (worst > 0.8) { ekfStatus = 'bad'; ekfBadge = 'badge-bad'; }
+    else if (worst > 0.5) { ekfStatus = 'warn'; ekfBadge = 'badge-warn'; }
+
+    let desc = `Velocity: ${svAvg.toFixed(3)} avg / ${svMax.toFixed(3)} max. `;
+    desc += `Position: ${spAvg.toFixed(3)} avg / ${spMax.toFixed(3)} max. `;
+    desc += `Height: ${shAvg.toFixed(3)} avg / ${shMax.toFixed(3)} max. `;
+    desc += `Compass: ${smAvg.toFixed(3)} avg / ${smMax.toFixed(3)} max. `;
+    if (ekfStatus === 'bad') desc += 'EKF variances exceeded safe limits — navigation was unreliable during parts of this flight.';
+    else if (ekfStatus === 'warn') desc += 'EKF variances were elevated — GPS or compass may have had issues.';
+    else desc += 'EKF estimation was healthy throughout the flight.';
+
+    ekfHealth = { title: 'EKF Navigation Health', status: ekfStatus, badge: ekfBadge, desc };
+  }
+
+  // --- COMPASS INTERFERENCE ---
+  let compassCheck = null;
+  if (mag.length > 10 && ctun.length > 10) {
+    // Calculate mag field strength for primary compass (I=0)
+    const mag0 = mag.filter(m => m.I === 0 || m.I === undefined);
+    if (mag0.length > 10) {
+      const magField = mag0.map(m => Math.sqrt(
+        (m.MagX - (m.OfsX||0))**2 + (m.MagY - (m.OfsY||0))**2 + (m.MagZ - (m.OfsZ||0))**2
+      ));
+
+      // Build throttle lookup
+      const thrMap = new Map();
+      for (const c of ctun) {
+        const thr = c.ThO !== undefined ? c.ThO : 0;
+        const normThr = thr > 1.5 ? thr / 100 : thr;
+        thrMap.set(Math.round(c.TimeUS / 100000), normThr);
+      }
+
+      // Match mag to throttle and compute correlation
+      const pairs = [];
+      for (let i = 0; i < mag0.length; i++) {
+        const tKey = Math.round(mag0[i].TimeUS / 100000);
+        const thr = thrMap.get(tKey);
+        if (thr !== undefined && thr > 0.1) {
+          pairs.push({ mag: magField[i], thr });
+        }
+      }
+
+      if (pairs.length > 20) {
+        const magAvg = avg(pairs.map(p => p.mag));
+        const thrAvg = avg(pairs.map(p => p.thr));
+        const magRange = max(pairs.map(p => p.mag)) - min(pairs.map(p => p.mag));
+        // Interference % = change in mag field relative to throttle change
+        // Simple: mag field variation as % of average
+        const magVariation = magRange / magAvg * 100;
+
+        // Correlation coefficient between throttle and mag field
+        let sumXY = 0, sumX2 = 0, sumY2 = 0;
+        for (const p of pairs) {
+          const dx = p.thr - thrAvg;
+          const dy = p.mag - magAvg;
+          sumXY += dx * dy;
+          sumX2 += dx * dx;
+          sumY2 += dy * dy;
+        }
+        const correlation = sumX2 > 0 && sumY2 > 0 ? Math.abs(sumXY / Math.sqrt(sumX2 * sumY2)) * 100 : 0;
+
+        let cmpStatus = 'good', cmpBadge = 'badge-good';
+        if (correlation > 60) { cmpStatus = 'bad'; cmpBadge = 'badge-bad'; }
+        else if (correlation > 30) { cmpStatus = 'warn'; cmpBadge = 'badge-warn'; }
+
+        let cmpDesc = `Throttle-to-mag correlation: ${correlation.toFixed(1)}%. Mag field variation: ${magVariation.toFixed(1)}%. `;
+        cmpDesc += `Avg field strength: ${magAvg.toFixed(0)} mGa. `;
+        if (cmpStatus === 'bad') cmpDesc += 'Strong motor interference on compass — mount compass further from motors/power wires, or run CompassMot calibration.';
+        else if (cmpStatus === 'warn') cmpDesc += 'Moderate interference — consider moving compass away from power distribution or running CompassMot.';
+        else cmpDesc += 'Compass shows minimal motor interference.';
+
+        compassCheck = { title: 'Compass Interference', status: cmpStatus, badge: cmpBadge, desc: cmpDesc };
+      }
+    }
+  }
+
+  // --- BOARD VOLTAGE / BROWNOUT ---
+  let powerCheck = null;
+  if (powr.length > 0) {
+    const vccValues = powr.map(p => p.Vcc).filter(v => v > 0);
+    const vservoValues = powr.map(p => p.VServo).filter(v => v > 0);
+    const minVcc = min(vccValues);
+    const maxVcc = max(vccValues);
+    const avgVcc = avg(vccValues);
+    const minVservo = vservoValues.length > 0 ? min(vservoValues) : 0;
+
+    let pwrStatus = 'good', pwrBadge = 'badge-good';
+    if (minVcc < 4.3) { pwrStatus = 'bad'; pwrBadge = 'badge-bad'; }
+    else if (minVcc < 4.6) { pwrStatus = 'warn'; pwrBadge = 'badge-warn'; }
+
+    let pwrDesc = `Board voltage: ${avgVcc.toFixed(2)}V avg, ${minVcc.toFixed(2)}V min, ${maxVcc.toFixed(2)}V max. `;
+    if (vservoValues.length > 0) pwrDesc += `Servo rail: ${minVservo.toFixed(2)}V min. `;
+    if (pwrStatus === 'bad') pwrDesc += 'Board voltage dropped dangerously low — risk of brownout and flight controller reboot in flight. Check power supply.';
+    else if (pwrStatus === 'warn') pwrDesc += 'Board voltage is marginal — monitor for further drops under load.';
+    else pwrDesc += 'Board power is stable and within spec (4.5-5.5V).';
+
+    powerCheck = { title: 'Board Power', status: pwrStatus, badge: pwrBadge, desc: pwrDesc };
+  }
+
+  // --- BROWNOUT DETECTION ---
+  let brownoutCheck = null;
+  const hasDisarm = events.some(e => e.id === 11);
+  const hasArm = events.some(e => e.id === 10);
+  const hadFlight = (ctun.length > 0 && ctun.some(c => {
+    const thr = c.ThO !== undefined ? c.ThO : 0;
+    return (thr > 1.5 ? thr/100 : thr) > 0.1;
+  }));
+  if (hasArm && !hasDisarm && hadFlight) {
+    brownoutCheck = {
+      title: 'Possible Brownout / Power Loss',
+      status: 'bad', badge: 'badge-bad',
+      desc: 'Log shows ARM event but NO DISARM — the log was truncated mid-flight. This typically indicates a power failure (brownout), flight controller reboot, or SD card failure. Check power wiring, connectors, and board voltage.'
+    };
+  }
+
+  return { errors, events, fcMessages, ekfHealth, compassCheck, powerCheck, brownoutCheck };
+}
+
+
+// ============================================================
 // HTML RENDERING
 // ============================================================
 
@@ -1266,24 +1501,57 @@ function dataItem(label, value, unit) {
   return `<div class="data-item"><div class="label">${label}</div><div class="value">${value}<span class="unit">${unit}</span></div></div>`;
 }
 
-function renderHealth(healthResults) {
+function renderHealth(healthResults, alerts) {
   const el = document.getElementById('tab-health');
-  if (healthResults.length === 0) {
-    el.innerHTML = '<div class="card"><p style="color:var(--text2)">No telemetry data available for health analysis.</p></div>';
-    return;
+  let html = '';
+
+  // Critical alerts first (errors, brownout)
+  if (alerts) {
+    if (alerts.brownoutCheck) {
+      html += `<div class="card" style="border-color:var(--red)"><div class="health-item">
+        <div class="health-title"><span class="badge badge-bad">CRITICAL</span> ${alerts.brownoutCheck.title}</div>
+        <div class="health-desc">${alerts.brownoutCheck.desc}</div>
+      </div></div>`;
+    }
+    if (alerts.errors.length > 0) {
+      html += `<div class="card" style="border-color:var(--red)"><h3>Errors & Failsafes</h3>`;
+      for (const e of alerts.errors) {
+        const badge = e.status === 'resolved' ? 'badge-good' : e.status === 'critical' ? 'badge-bad' : 'badge-warn';
+        const timeMin = (e.timeUS / 1e6 / 60).toFixed(1);
+        html += `<div class="health-item">
+          <div class="health-title"><span class="badge ${badge}">${e.status.toUpperCase()}</span> ${e.desc}</div>
+          <div class="health-desc">At ${timeMin} min into log</div>
+        </div>`;
+      }
+      html += '</div>';
+    }
   }
-  let html = '<div class="card">';
-  for (const h of healthResults) {
-    html += `<div class="health-item">
-      <div class="health-title"><span class="badge ${h.badge}">${h.status.toUpperCase()}</span> ${h.title}</div>
-      <div class="health-desc">${h.desc}</div>
-    </div>`;
+
+  // System checks (EKF, compass, power + existing)
+  const allChecks = [...healthResults];
+  if (alerts) {
+    if (alerts.ekfHealth) allChecks.push(alerts.ekfHealth);
+    if (alerts.compassCheck) allChecks.push(alerts.compassCheck);
+    if (alerts.powerCheck) allChecks.push(alerts.powerCheck);
   }
-  html += '</div>';
+
+  if (allChecks.length === 0) {
+    html += '<div class="card"><p style="color:var(--text2)">No telemetry data available for health analysis.</p></div>';
+  } else {
+    html += '<div class="card"><h3>System Health</h3>';
+    for (const h of allChecks) {
+      html += `<div class="health-item">
+        <div class="health-title"><span class="badge ${h.badge}">${h.status.toUpperCase()}</span> ${h.title}</div>
+        <div class="health-desc">${h.desc}</div>
+      </div>`;
+    }
+    html += '</div>';
+  }
+
   el.innerHTML = html;
 }
 
-function renderFlightReport(report) {
+function renderFlightReport(report, alerts) {
   const el = document.getElementById('tab-flight');
   let html = '<div class="card"><h3>Flight Summary</h3><div class="report-text">';
 
@@ -1315,6 +1583,32 @@ function renderFlightReport(report) {
     html += `<div class="card"><h3>Vibration Summary</h3><div class="report-text">`;
     html += `<p>Average vibration — X: <strong>${report.vibeAvgX.toFixed(1)}</strong>, Y: <strong>${report.vibeAvgY.toFixed(1)}</strong>, Z: <strong>${report.vibeAvgZ.toFixed(1)}</strong> m/s². Total clipping events: <strong>${report.totalClips}</strong>.</p>`;
     html += `</div></div>`;
+  }
+
+  // Event Timeline
+  if (alerts && alerts.events.length > 0) {
+    const t0 = alerts.events[0].timeUS;
+    html += `<div class="card"><h3>Event Timeline</h3><table>
+      <tr><th>Time</th><th>Event</th></tr>`;
+    for (const e of alerts.events) {
+      const timeMin = ((e.timeUS - t0) / 1e6 / 60).toFixed(2);
+      const style = e.isCritical ? ' style="color:var(--red)"' : '';
+      html += `<tr><td>${timeMin} min</td><td${style}>${e.name}</td></tr>`;
+    }
+    html += '</table></div>';
+  }
+
+  // FC Messages
+  if (alerts && alerts.fcMessages.length > 0) {
+    const t0 = alerts.fcMessages[0].timeUS;
+    html += `<div class="card"><h3>Flight Controller Messages</h3><table>
+      <tr><th>Time</th><th>Message</th></tr>`;
+    for (const m of alerts.fcMessages) {
+      const timeMin = ((m.timeUS - t0) / 1e6 / 60).toFixed(2);
+      const style = m.isWarning ? ' style="color:var(--red)"' : '';
+      html += `<tr><td>${timeMin} min</td><td${style}>${m.text}</td></tr>`;
+    }
+    html += '</table></div>';
   }
 
   el.innerHTML = html;
@@ -1542,7 +1836,7 @@ let _analysisResult = null; // Store for export
 
 function exportTXT() {
   if (!_analysisResult) return;
-  const { mission, health, report, tuning, fileName } = _analysisResult;
+  const { mission, health, report, tuning, alerts, fileName } = _analysisResult;
   let txt = '';
   txt += `FLIGHT ANALYZER REPORT\n`;
   txt += `======================\n`;
@@ -1624,6 +1918,41 @@ function exportTXT() {
   for (const t of tuning) {
     txt += `${t.title}: ${t.value}\n`;
     txt += `  ${t.reason}\n\n`;
+  }
+
+  // Section 5: Alerts & Events
+  if (alerts) {
+    txt += `\n${'='.repeat(50)}\n`;
+    txt += `SECTION 5: ALERTS, ERRORS & EVENTS\n`;
+    txt += `${'='.repeat(50)}\n\n`;
+
+    if (alerts.brownoutCheck) {
+      txt += `[CRITICAL] ${alerts.brownoutCheck.title}\n  ${alerts.brownoutCheck.desc}\n\n`;
+    }
+    if (alerts.errors.length > 0) {
+      txt += `--- ERRORS / FAILSAFES ---\n`;
+      for (const e of alerts.errors) {
+        txt += `  [${e.status.toUpperCase()}] ${e.desc} (at ${(e.timeUS/1e6/60).toFixed(1)} min)\n`;
+      }
+      txt += '\n';
+    } else {
+      txt += `No errors or failsafes recorded.\n\n`;
+    }
+    if (alerts.ekfHealth) txt += `[${alerts.ekfHealth.status.toUpperCase()}] ${alerts.ekfHealth.title}: ${alerts.ekfHealth.desc}\n\n`;
+    if (alerts.compassCheck) txt += `[${alerts.compassCheck.status.toUpperCase()}] ${alerts.compassCheck.title}: ${alerts.compassCheck.desc}\n\n`;
+    if (alerts.powerCheck) txt += `[${alerts.powerCheck.status.toUpperCase()}] ${alerts.powerCheck.title}: ${alerts.powerCheck.desc}\n\n`;
+
+    txt += `--- EVENT TIMELINE ---\n`;
+    for (const e of alerts.events) {
+      txt += `  ${(e.timeUS/1e6/60).toFixed(2)} min: ${e.name}\n`;
+    }
+    txt += '\n';
+
+    txt += `--- FC MESSAGES ---\n`;
+    for (const m of alerts.fcMessages) {
+      txt += `  ${(m.timeUS/1e6/60).toFixed(2)} min: ${m.text}\n`;
+    }
+    txt += '\n';
   }
 
   // Download
@@ -1718,14 +2047,15 @@ function runAnalysis(parsed, fileName) {
     const health = calcTroubleshooting(parsed.data);
     const report = calcFlightReport(parsed.data, phases, mission);
     const tuning = calcTuning(parsed.data, phases, mission, parsed.params);
+    const alerts = calcAlerts(parsed.data);
 
-    _analysisResult = { mission, health, report, tuning, fileName, parsed };
+    _analysisResult = { mission, health, report, tuning, alerts, fileName, parsed };
 
     // Render
     renderFlightInfo(parsed, fileName, report, mission.vehicleType);
     renderMissionPlanning(mission);
-    renderHealth(health);
-    renderFlightReport(report);
+    renderHealth(health, alerts);
+    renderFlightReport(report, alerts);
     renderTuning(tuning);
     renderCharts(parsed.data, phases);
 
