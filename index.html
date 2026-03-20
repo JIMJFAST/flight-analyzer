@@ -861,16 +861,22 @@ function calcTroubleshooting(data) {
     results.push({ title: 'Battery Voltage Sag', status: sagStatus, badge: sagBadge, desc: sagDesc });
 
     // Battery resistance — only meaningful when current > 5A (noise at low current)
+    // Evaluate per-cell: detect cell count from max voltage (4.2V per cell)
     const resistances = bat.filter(b => b.Res > 0 && b.Curr > 5).map(b => b.Res);
     if (resistances.length > 0) {
       const avgRes = avg(resistances);
+      const cellCount = Math.round(maxVolt / 4.2) || 1; // 12S=12, 6S=6, 4S=4, etc.
+      const perCellRes = avgRes / cellCount;
+
       let resStatus = 'good', resBadge = 'badge-good';
-      if (avgRes > 0.05) { resStatus = 'bad'; resBadge = 'badge-bad'; }
-      else if (avgRes > 0.02) { resStatus = 'warn'; resBadge = 'badge-warn'; }
-      let resDesc = `Average internal resistance: ${(avgRes*1000).toFixed(1)} mΩ. `;
-      if (resStatus === 'bad') resDesc += 'High resistance — battery is aging or damaged. Replace soon.';
-      else if (resStatus === 'warn') resDesc += 'Resistance is elevated — battery is showing age.';
-      else resDesc += 'Battery resistance is healthy.';
+      // Per-cell thresholds: <6mΩ good, 6-10mΩ warn, >10mΩ bad
+      if (perCellRes > 0.010) { resStatus = 'bad'; resBadge = 'badge-bad'; }
+      else if (perCellRes > 0.006) { resStatus = 'warn'; resBadge = 'badge-warn'; }
+
+      let resDesc = `Pack resistance: ${(avgRes*1000).toFixed(1)} mΩ (${cellCount}S detected, ${(perCellRes*1000).toFixed(1)} mΩ/cell). `;
+      if (resStatus === 'bad') resDesc += 'High per-cell resistance — battery is aging or damaged. Replace soon.';
+      else if (resStatus === 'warn') resDesc += 'Per-cell resistance is elevated — battery is showing wear.';
+      else resDesc += 'Per-cell resistance is healthy.';
       results.push({ title: 'Battery Resistance', status: resStatus, badge: resBadge, desc: resDesc });
     }
   }
