@@ -1248,7 +1248,7 @@ const EV_NAMES = {
   90:'Airspeed Primary Changed',163:'Surfaced',164:'Not Surfaced',165:'Bottomed',166:'Not Bottomed'
 };
 
-function calcAlerts(data) {
+function calcAlerts(data, params) {
   const alerts = [];
   const err = data.ERR || [];
   const ev = data.EV || [];
@@ -1258,6 +1258,7 @@ function calcAlerts(data) {
   const mag = data.MAG || [];
   const ctun = data.CTUN || [];
   const bat = data.BAT || [];
+  params = params || {};
 
   // --- ERROR / FAILSAFE DECODER ---
   const errors = [];
@@ -1430,7 +1431,43 @@ function calcAlerts(data) {
     };
   }
 
-  return { errors, events, fcMessages, ekfHealth, compassCheck, powerCheck, brownoutCheck };
+  // --- BATTERY SENSOR ACCURACY WARNING ---
+  let sensorCheck = null;
+  const battMonitor = params['BATT_MONITOR'];
+  if (battMonitor !== undefined) {
+    const monType = Math.round(battMonitor);
+    const monNames = {0:'Disabled',3:'Analog V+I',4:'Analog V Only',5:'SMBUS Smart Battery',
+      7:'UAVCAN',8:'BLHeli ESC',9:'Sum of Following',16:'DroneCAN',19:'INA2xx',26:'INA228'};
+    const name = monNames[monType] || `Type ${monType}`;
+
+    if (monType === 4 || monType === 3) {
+      // Analog sensor — needs calibration warning
+      const ampPervlt = params['BATT_AMP_PERVLT'] || 0;
+      const ampOffset = params['BATT_AMP_OFFSET'] || 0;
+      let sensorStatus = 'warn', sensorBadge = 'badge-warn';
+      let desc = `Sensor: ${name}. `;
+      if (monType === 4) {
+        desc += `Voltage-only analog with computed current (AMP_PERVLT=${ampPervlt.toFixed(0)}). `;
+        desc += 'Current and mAh readings are estimated from voltage — accuracy is ±10-30% unless AMP_PERVLT has been calibrated with a DC clamp meter. ';
+        desc += 'For mission planning: rates are good for relative comparison between flights, but absolute mAh may be off. Add extra reserve margin.';
+      } else {
+        desc += `Analog voltage + current shunt (AMP_PERVLT=${ampPervlt.toFixed(0)}). `;
+        if (ampOffset === 0) {
+          desc += 'AMP_OFFSET is 0 (default) — current reading may have a DC bias. ';
+        }
+        desc += 'Calibrate AMP_PERVLT with a DC clamp meter for ±3% accuracy. Without calibration, expect ±10-20% error on current/mAh.';
+      }
+      sensorCheck = { title: 'Battery Sensor Accuracy', status: sensorStatus, badge: sensorBadge, desc };
+    } else if (monType === 5) {
+      sensorCheck = { title: 'Battery Sensor Accuracy', status: 'good', badge: 'badge-good',
+        desc: `Sensor: ${name}. SMBUS smart battery with onboard fuel gauge — mAh readings are coulomb-counted by the BMS. Typical accuracy: ±1-3%. No calibration needed.` };
+    } else if (monType === 16 || monType === 19 || monType === 26) {
+      sensorCheck = { title: 'Battery Sensor Accuracy', status: 'good', badge: 'badge-good',
+        desc: `Sensor: ${name}. Digital bus power module — typically ±2-5% accuracy. Verify calibration if numbers seem off.` };
+    }
+  }
+
+  return { errors, events, fcMessages, ekfHealth, compassCheck, powerCheck, brownoutCheck, sensorCheck };
 }
 
 
@@ -1533,6 +1570,7 @@ function renderHealth(healthResults, alerts) {
     if (alerts.ekfHealth) allChecks.push(alerts.ekfHealth);
     if (alerts.compassCheck) allChecks.push(alerts.compassCheck);
     if (alerts.powerCheck) allChecks.push(alerts.powerCheck);
+    if (alerts.sensorCheck) allChecks.push(alerts.sensorCheck);
   }
 
   if (allChecks.length === 0) {
@@ -1941,6 +1979,7 @@ function exportTXT() {
     if (alerts.ekfHealth) txt += `[${alerts.ekfHealth.status.toUpperCase()}] ${alerts.ekfHealth.title}: ${alerts.ekfHealth.desc}\n\n`;
     if (alerts.compassCheck) txt += `[${alerts.compassCheck.status.toUpperCase()}] ${alerts.compassCheck.title}: ${alerts.compassCheck.desc}\n\n`;
     if (alerts.powerCheck) txt += `[${alerts.powerCheck.status.toUpperCase()}] ${alerts.powerCheck.title}: ${alerts.powerCheck.desc}\n\n`;
+    if (alerts.sensorCheck) txt += `[${alerts.sensorCheck.status.toUpperCase()}] ${alerts.sensorCheck.title}: ${alerts.sensorCheck.desc}\n\n`;
 
     txt += `--- EVENT TIMELINE ---\n`;
     for (const e of alerts.events) {
@@ -2047,7 +2086,7 @@ function runAnalysis(parsed, fileName) {
     const health = calcTroubleshooting(parsed.data);
     const report = calcFlightReport(parsed.data, phases, mission);
     const tuning = calcTuning(parsed.data, phases, mission, parsed.params);
-    const alerts = calcAlerts(parsed.data);
+    const alerts = calcAlerts(parsed.data, parsed.params);
 
     _analysisResult = { mission, health, report, tuning, alerts, fileName, parsed };
 
