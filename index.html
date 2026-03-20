@@ -865,7 +865,19 @@ function calcTroubleshooting(data) {
     const resistances = bat.filter(b => b.Res > 0 && b.Curr > 5).map(b => b.Res);
     if (resistances.length > 0) {
       const avgRes = avg(resistances);
-      const cellCount = Math.round(maxVolt / 4.2) || 1; // 12S=12, 6S=6, 4S=4, etc.
+      // Detect cell count from max voltage
+      // LiPo/Li-Ion/LiHV: 3.7-4.35V/cell → use ~3.9V midpoint for partially-charged detection
+      // LiFe: 3.0-3.6V/cell → only if voltage-per-cell clearly below 3.7V
+      // Standard cell counts: 3S,4S,6S,8S,10S,12S,14S
+      const standardS = [3,4,6,8,10,12,14];
+      let cellCount = Math.round(maxVolt / 4.0); // 4.0V is midrange for LiPo in use
+      // Snap to nearest standard cell count if close
+      const nearest = standardS.reduce((a,b) => Math.abs(b - cellCount) < Math.abs(a - cellCount) ? b : a);
+      if (Math.abs(nearest - cellCount) <= 1) cellCount = nearest;
+      // Sanity: voltage per cell should be 3.0-4.4V
+      const vPerCell = maxVolt / cellCount;
+      if (vPerCell < 3.0 || vPerCell > 4.5) cellCount = Math.round(maxVolt / 4.2) || 1;
+      if (cellCount < 1) cellCount = 1;
       const perCellRes = avgRes / cellCount;
 
       let resStatus = 'good', resBadge = 'badge-good';
