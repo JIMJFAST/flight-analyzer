@@ -564,9 +564,11 @@ function detectPhases(data) {
     const throttle = c.ThO !== undefined ? c.ThO : 0;
 
     // Get altitude and climb rate: from CTUN (copter) or BARO (plane)
+    // Copter CTUN stores CRt/DCRt as int16 in cm/s (format 'h') — always ÷ 100
+    // BARO.CRt is a float in m/s — no conversion needed
     let climbRate, alt;
     if (isCopter && !isPlane) {
-      climbRate = c.CRt !== undefined ? c.CRt : 0;
+      climbRate = (c.CRt !== undefined ? c.CRt : 0) * 0.01; // cm/s -> m/s
       alt = c.Alt !== undefined ? c.Alt : 0;
     } else {
       const baroMsg = baroMap.get(tKey) || c;
@@ -677,7 +679,7 @@ function calcMissionPlanning(data, phases) {
     startVolt = bat[0].Volt || 0;
     endVolt = bat[bat.length-1].Volt || 0;
   }
-  const usedMah = (endMah - startMah) * 1000; // convert Ah to mAh
+  const usedMah = endMah - startMah; // CurrTot is already in mAh (AP stores consumed_mah directly)
   const usedWh = endWh - startWh;
 
   // Phase rates — all vehicle types
@@ -858,8 +860,8 @@ function calcTroubleshooting(data) {
 
     results.push({ title: 'Battery Voltage Sag', status: sagStatus, badge: sagBadge, desc: sagDesc });
 
-    // Battery resistance
-    const resistances = bat.filter(b => b.Res > 0).map(b => b.Res);
+    // Battery resistance — only meaningful when current > 5A (noise at low current)
+    const resistances = bat.filter(b => b.Res > 0 && b.Curr > 5).map(b => b.Res);
     if (resistances.length > 0) {
       const avgRes = avg(resistances);
       let resStatus = 'good', resBadge = 'badge-good';
@@ -972,11 +974,13 @@ function calcFlightReport(data, phases, mission) {
   }
 
   // Climb/descent rates
-  // Climb rate: from CTUN (copter) or BARO (plane)
+  // Climb rate: from CTUN (copter, cm/s -> m/s) or BARO (plane, already m/s)
   const baro = data.BARO || [];
-  const crSource = ctun.length > 0 && ('CRt' in (ctun[0]||{})) ? ctun : baro;
-  report.maxClimbRate = max(crSource.map(c => c.CRt || 0));
-  report.maxDescentRate = Math.abs(min(crSource.map(c => c.CRt || 0)));
+  const isCopterReport = ctun.length > 0 && ('CRt' in (ctun[0]||{}));
+  const crSource = isCopterReport ? ctun : baro;
+  const crScale = isCopterReport ? 0.01 : 1; // Copter CTUN.CRt is int16 in cm/s
+  report.maxClimbRate = max(crSource.map(c => (c.CRt || 0) * crScale));
+  report.maxDescentRate = Math.abs(min(crSource.map(c => (c.CRt || 0) * crScale)));
   report.avgClimbRate = mission.avgClimbRate;
   report.avgDescentRate = mission.avgDescentRate;
 
@@ -1043,7 +1047,8 @@ function calcTuning(data, phases, mission, params) {
     if (hoverThrottles.length > 0) {
       const avgHoverThrottle = avg(hoverThrottles) * 100;
       let reason = '';
-      if (avgHoverThrottle < 20) reason = 'Very low hover throttle — vehicle is overpowered. Consider smaller props or lower KV motors for better efficiency. Ideal range is 30-50%.';
+      if (avgHoverThrottle < 15) reason = 'Very low hover throttle — vehicle is significantly overpowered. Consider smaller props or lower KV motors for better efficiency. Ideal range is 30-50%.';
+      else if (avgHoverThrottle < 25) reason = 'Low hover throttle — vehicle is overpowered for its weight. You have lots of thrust margin but efficiency suffers. Consider smaller props for better cruise economy. Ideal is 30-50% (ArduPilot default: 35%).';
       else if (avgHoverThrottle > 60) reason = 'High hover throttle — vehicle is heavy for its motors/props. Reduce weight or increase motor/prop size. Ideal range is 30-50%.';
       else if (avgHoverThrottle > 50) reason = 'Slightly high but acceptable. You have limited power margin for aggressive maneuvers.';
       else reason = 'Within ideal range (30-50%). Good power-to-weight ratio.';
