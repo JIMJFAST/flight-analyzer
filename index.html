@@ -424,7 +424,8 @@ function parseLog(buffer, onProgress) {
   const WANTED = new Set([
     'BAT','ESC','CTUN','ATT','VIBE','RCOU','GPS','RATE',
     'MOTB','BARO','MODE','PARM','MSG','RCIN','POWR',
-    'BCL','IMU','EV','VER','PSCD','CMD'
+    'BCL','IMU','EV','VER','PSCD','CMD',
+    'NTUN','ARSP','PIDR','PIDP','STAT'
   ]);
 
   // First, register FMT type 128
@@ -515,10 +516,14 @@ function parseLog(buffer, onProgress) {
 
 function detectPhases(data) {
   const ctun = data.CTUN || [];
+  const baro = data.BARO || [];
   const gps = data.GPS || [];
   const bat = data.BAT || [];
 
-  if (ctun.length === 0) return { hover:[], climb:[], descent:[], cruise:[], ground:[] };
+  if (ctun.length === 0 && baro.length === 0) return { hover:[], climb:[], descent:[], cruise:[], ground:[] };
+
+  // Detect vehicle type: copter CTUN has CRt and Alt, plane CTUN does not
+  const isCopter = ctun.length > 0 && ('CRt' in (ctun[0] || {}));
 
   // Build time-indexed lookup for GPS speed
   const gpsSpeedMap = new Map();
@@ -532,14 +537,33 @@ function detectPhases(data) {
     if (b.TimeUS) batMap.set(Math.round(b.TimeUS / 100000), b);
   }
 
+  // Build time-indexed lookup for BARO (alt + climb rate for planes)
+  const baroMap = new Map();
+  for (const b of baro) {
+    if (b.TimeUS) baroMap.set(Math.round(b.TimeUS / 100000), b);
+  }
+
   const phases = { hover: [], climb: [], descent: [], cruise: [], ground: [] };
 
-  for (const c of ctun) {
+  // Use CTUN as primary time source, fall back to BARO for altitude/climb rate on planes
+  const timeSeries = ctun.length > 0 ? ctun : baro;
+
+  for (const c of timeSeries) {
     const t = c.TimeUS;
     const tKey = Math.round(t / 100000);
     const throttle = c.ThO !== undefined ? c.ThO : 0;
-    const climbRate = c.CRt !== undefined ? c.CRt : 0;
-    const alt = c.Alt !== undefined ? c.Alt : 0;
+
+    // Get altitude and climb rate: from CTUN (copter) or BARO (plane)
+    let climbRate, alt;
+    if (isCopter) {
+      climbRate = c.CRt !== undefined ? c.CRt : 0;
+      alt = c.Alt !== undefined ? c.Alt : 0;
+    } else {
+      const baroMsg = baroMap.get(tKey) || c; // BARO has Alt and CRt
+      climbRate = baroMsg.CRt !== undefined ? baroMsg.CRt : 0;
+      alt = baroMsg.Alt !== undefined ? baroMsg.Alt : 0;
+    }
+
     const speed = gpsSpeedMap.get(tKey) || 0;
     const batMsg = batMap.get(tKey);
 
@@ -552,7 +576,11 @@ function detectPhases(data) {
       power: batMsg ? batMsg.Volt * batMsg.Curr : null,
     };
 
-    if (throttle < 0.05) {
+    // Throttle: copter uses 0-1, plane uses 0-100. Normalize.
+    const normThrottle = throttle > 1.5 ? throttle / 100 : throttle;
+    sample.throttle = normThrottle;
+
+    if (normThrottle < 0.05) {
       phases.ground.push(sample);
     } else if (climbRate > 0.5) {
       phases.climb.push(sample);
@@ -910,8 +938,11 @@ function calcFlightReport(data, phases, mission) {
   }
 
   // Climb/descent rates
-  report.maxClimbRate = max(ctun.map(c => c.CRt || 0));
-  report.maxDescentRate = Math.abs(min(ctun.map(c => c.CRt || 0)));
+  // Climb rate: from CTUN (copter) or BARO (plane)
+  const baro = data.BARO || [];
+  const crSource = ctun.length > 0 && ('CRt' in (ctun[0]||{})) ? ctun : baro;
+  report.maxClimbRate = max(crSource.map(c => c.CRt || 0));
+  report.maxDescentRate = Math.abs(min(crSource.map(c => c.CRt || 0)));
   report.avgClimbRate = mission.avgClimbRate;
   report.avgDescentRate = mission.avgDescentRate;
 
@@ -1299,17 +1330,19 @@ function buildCharts(data) {
     });
   }
 
-  // Altitude & climb
+  // Altitude & climb — use CTUN for copter, BARO for plane
   const ctun = downsample(data.CTUN || [], MAX_PTS);
-  if (ctun.length > 0) {
-    const t0 = ctun[0].TimeUS;
+  const isCopterChart = ctun.length > 0 && ('CRt' in (ctun[0]||{}));
+  const altSource = isCopterChart ? ctun : downsample(data.BARO || [], MAX_PTS);
+  if (altSource.length > 0) {
+    const t0 = altSource[0].TimeUS;
     new Chart(document.getElementById('chart-alt'), {
       type: 'line',
       data: {
-        labels: ctun.map(c => ((c.TimeUS - t0)/1e6/60).toFixed(1)),
+        labels: altSource.map(c => ((c.TimeUS - t0)/1e6/60).toFixed(1)),
         datasets: [
-          { label: 'Altitude (m)', data: ctun.map(c => c.Alt), borderColor: '#4caf87', yAxisID: 'y' },
-          { label: 'Climb Rate (m/s)', data: ctun.map(c => c.CRt), borderColor: '#e25555', yAxisID: 'y1' },
+          { label: 'Altitude (m)', data: altSource.map(c => c.Alt), borderColor: '#4caf87', yAxisID: 'y' },
+          { label: 'Climb Rate (m/s)', data: altSource.map(c => c.CRt), borderColor: '#e25555', yAxisID: 'y1' },
         ]
       },
       options: {
