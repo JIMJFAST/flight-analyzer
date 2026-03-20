@@ -514,38 +514,48 @@ function parseLog(buffer, onProgress) {
 // FLIGHT PHASE DETECTION
 // ============================================================
 
+// Detect vehicle type from log data
+function detectVehicleType(data) {
+  const ctun = data.CTUN || [];
+  if (ctun.length === 0) return 'unknown';
+  // Copter CTUN has CRt (climb rate) and Alt; plane CTUN has NavRoll and As (airspeed)
+  const first = ctun[0];
+  const isCopter = 'CRt' in first;
+  const isPlane = 'NavRoll' in first || 'As' in first;
+  if (isCopter && isPlane) return 'quadplane'; // VTOL — has both
+  if (isCopter) return 'copter';
+  if (isPlane) return 'plane';
+  return 'unknown';
+}
+
 function detectPhases(data) {
   const ctun = data.CTUN || [];
   const baro = data.BARO || [];
   const gps = data.GPS || [];
   const bat = data.BAT || [];
 
-  if (ctun.length === 0 && baro.length === 0) return { hover:[], climb:[], descent:[], cruise:[], ground:[] };
+  const vehicleType = detectVehicleType(data);
+  const isCopter = vehicleType === 'copter' || vehicleType === 'quadplane';
+  const isPlane = vehicleType === 'plane' || vehicleType === 'quadplane';
 
-  // Detect vehicle type: copter CTUN has CRt and Alt, plane CTUN does not
-  const isCopter = ctun.length > 0 && ('CRt' in (ctun[0] || {}));
+  const emptyPhases = { hover:[], loiter:[], climb:[], descent:[], cruise:[], glide:[], ground:[], vehicleType };
+  if (ctun.length === 0 && baro.length === 0) return emptyPhases;
 
-  // Build time-indexed lookup for GPS speed
+  // Build time-indexed lookups
   const gpsSpeedMap = new Map();
   for (const g of gps) {
     if (g.TimeUS) gpsSpeedMap.set(Math.round(g.TimeUS / 100000), g.Spd);
   }
-
-  // Build time-indexed lookup for BAT
   const batMap = new Map();
   for (const b of bat) {
     if (b.TimeUS) batMap.set(Math.round(b.TimeUS / 100000), b);
   }
-
-  // Build time-indexed lookup for BARO (alt + climb rate for planes)
   const baroMap = new Map();
   for (const b of baro) {
     if (b.TimeUS) baroMap.set(Math.round(b.TimeUS / 100000), b);
   }
 
-  const phases = { hover: [], climb: [], descent: [], cruise: [], ground: [] };
-
-  // Use CTUN as primary time source, fall back to BARO for altitude/climb rate on planes
+  const phases = { hover:[], loiter:[], climb:[], descent:[], cruise:[], glide:[], ground:[], vehicleType };
   const timeSeries = ctun.length > 0 ? ctun : baro;
 
   for (const c of timeSeries) {
@@ -555,11 +565,11 @@ function detectPhases(data) {
 
     // Get altitude and climb rate: from CTUN (copter) or BARO (plane)
     let climbRate, alt;
-    if (isCopter) {
+    if (isCopter && !isPlane) {
       climbRate = c.CRt !== undefined ? c.CRt : 0;
       alt = c.Alt !== undefined ? c.Alt : 0;
     } else {
-      const baroMsg = baroMap.get(tKey) || c; // BARO has Alt and CRt
+      const baroMsg = baroMap.get(tKey) || c;
       climbRate = baroMsg.CRt !== undefined ? baroMsg.CRt : 0;
       alt = baroMsg.Alt !== undefined ? baroMsg.Alt : 0;
     }
@@ -567,29 +577,47 @@ function detectPhases(data) {
     const speed = gpsSpeedMap.get(tKey) || 0;
     const batMsg = batMap.get(tKey);
 
+    // Normalize throttle: copter 0-1, plane 0-100
+    const normThrottle = throttle > 1.5 ? throttle / 100 : throttle;
+
     const sample = {
-      timeUS: t,
-      time: t / 1e6,
-      throttle, climbRate, alt, speed,
+      timeUS: t, time: t / 1e6,
+      throttle: normThrottle, climbRate, alt, speed,
       voltage: batMsg ? batMsg.Volt : null,
       current: batMsg ? batMsg.Curr : null,
-      power: batMsg ? batMsg.Volt * batMsg.Curr : null,
+      power: batMsg ? (batMsg.Volt * batMsg.Curr) : null,
     };
 
-    // Throttle: copter uses 0-1, plane uses 0-100. Normalize.
-    const normThrottle = throttle > 1.5 ? throttle / 100 : throttle;
-    sample.throttle = normThrottle;
-
-    if (normThrottle < 0.05) {
-      phases.ground.push(sample);
-    } else if (climbRate > 0.5) {
-      phases.climb.push(sample);
-    } else if (climbRate < -0.5) {
-      phases.descent.push(sample);
-    } else if (speed > 1.5) {
-      phases.cruise.push(sample);
+    if (vehicleType === 'plane') {
+      // Plane phase logic
+      if (normThrottle < 0.05 && speed < 2) {
+        phases.ground.push(sample);
+      } else if (normThrottle < 0.05 && alt > 5) {
+        phases.glide.push(sample);          // Throttle idle, airborne = glide
+      } else if (climbRate > 0.5) {
+        phases.climb.push(sample);
+      } else if (climbRate < -0.5) {
+        phases.descent.push(sample);
+      } else if (speed > 5) {
+        phases.cruise.push(sample);          // Fast forward flight
+      } else if (normThrottle > 0.05) {
+        phases.loiter.push(sample);          // Slow, powered = circling/loiter
+      } else {
+        phases.ground.push(sample);
+      }
     } else {
-      phases.hover.push(sample);
+      // Copter / QuadPlane / unknown phase logic
+      if (normThrottle < 0.05) {
+        phases.ground.push(sample);
+      } else if (climbRate > 0.5) {
+        phases.climb.push(sample);
+      } else if (climbRate < -0.5) {
+        phases.descent.push(sample);
+      } else if (speed > 1.5) {
+        phases.cruise.push(sample);
+      } else {
+        phases.hover.push(sample);
+      }
     }
   }
 
@@ -652,11 +680,14 @@ function calcMissionPlanning(data, phases) {
   const usedMah = (endMah - startMah) * 1000; // convert Ah to mAh
   const usedWh = endWh - startWh;
 
-  // Phase rates
+  // Phase rates — all vehicle types
   const hover = calcPhaseRates(phases.hover);
+  const loiter = calcPhaseRates(phases.loiter);
   const climb = calcPhaseRates(phases.climb);
   const descent = calcPhaseRates(phases.descent);
   const cruise = calcPhaseRates(phases.cruise);
+  const glide = calcPhaseRates(phases.glide);
+  const vehicleType = phases.vehicleType;
 
   // Climb / descent rates
   const climbRates = phases.climb.map(s => s.climbRate);
@@ -668,20 +699,23 @@ function calcMissionPlanning(data, phases) {
   const cruiseSpeeds = phases.cruise.map(s => s.speed);
   const avgCruiseSpeed = avg(cruiseSpeeds);
 
-  // Endurance estimates (if we have hover/cruise current)
+  // Endurance estimates
   const totalCapMah = usedMah > 0 ? usedMah : (bat.length > 0 && bat[0].RemPct > 0 ?
     usedMah / (1 - bat[bat.length-1].RemPct / 100) : 0);
-  const hoverEndurance = hover.ampsPerHour > 0 ? (totalCapMah / hover.mahPerHour * 60) : 0;
+
+  // Primary endurance: hover for copter, loiter for plane
+  const primaryPhase = vehicleType === 'plane' ? loiter : hover;
+  const primaryEndurance = primaryPhase.ampsPerHour > 0 ? (totalCapMah / primaryPhase.mahPerHour * 60) : 0;
   const cruiseEndurance = cruise.ampsPerHour > 0 ? (totalCapMah / cruise.mahPerHour * 60) : 0;
   const cruiseRange = cruiseEndurance > 0 ? (avgCruiseSpeed * cruiseEndurance * 60 / 1000) : 0;
 
   return {
-    hover, climb, descent, cruise,
+    hover, loiter, climb, descent, cruise, glide, vehicleType,
     usedMah, usedWh, totalCapMah,
     startVolt, endVolt,
     avgClimbRate, avgDescentRate,
     avgCruiseSpeed, avgCruiseSpeedKmh: avgCruiseSpeed * 3.6,
-    hoverEndurance, cruiseEndurance, cruiseRange,
+    primaryEndurance, cruiseEndurance, cruiseRange,
   };
 }
 
@@ -991,34 +1025,46 @@ function calcTuning(data, phases, mission, params) {
 
   const recs = [];
 
-  // Hover throttle
-  const hoverThrottles = phases.hover.map(s => s.throttle).filter(t => t > 0);
-  if (hoverThrottles.length > 0) {
-    const avgHoverThrottle = avg(hoverThrottles) * 100;
-    let title = 'Hover Throttle';
-    let value = `${avgHoverThrottle.toFixed(1)}%`;
-    let reason = '';
-    if (avgHoverThrottle < 20) {
-      reason = 'Very low hover throttle — vehicle is overpowered. Consider smaller props or lower KV motors for better efficiency. Ideal range is 30-50%.';
-    } else if (avgHoverThrottle > 60) {
-      reason = 'High hover throttle — vehicle is heavy for its motors/props. Reduce weight or increase motor/prop size. Ideal range is 30-50%.';
-    } else if (avgHoverThrottle > 50) {
-      reason = 'Slightly high but acceptable. You have limited power margin for aggressive maneuvers.';
-    } else {
-      reason = 'Within ideal range (30-50%). Good power-to-weight ratio.';
+  const vt = phases.vehicleType;
+
+  // Hover/Loiter throttle — adapt to vehicle type
+  if (vt === 'plane') {
+    const loiterThrottles = phases.loiter.map(s => s.throttle).filter(t => t > 0);
+    if (loiterThrottles.length > 0) {
+      const avgLoiterThrottle = avg(loiterThrottles) * 100;
+      let reason = '';
+      if (avgLoiterThrottle > 70) reason = 'High loiter throttle — plane may be too heavy, underpowered, or flying too slowly. Check airspeed and trim.';
+      else if (avgLoiterThrottle > 50) reason = 'Moderate loiter throttle. Normal for most planes, but a more efficient prop or higher cruise speed could reduce this.';
+      else reason = 'Efficient loiter throttle. Good power-to-drag ratio.';
+      recs.push({ title: 'Loiter Throttle', value: `${avgLoiterThrottle.toFixed(1)}%`, reason });
     }
-    recs.push({ title, value, reason });
+  } else {
+    const hoverThrottles = phases.hover.map(s => s.throttle).filter(t => t > 0);
+    if (hoverThrottles.length > 0) {
+      const avgHoverThrottle = avg(hoverThrottles) * 100;
+      let reason = '';
+      if (avgHoverThrottle < 20) reason = 'Very low hover throttle — vehicle is overpowered. Consider smaller props or lower KV motors for better efficiency. Ideal range is 30-50%.';
+      else if (avgHoverThrottle > 60) reason = 'High hover throttle — vehicle is heavy for its motors/props. Reduce weight or increase motor/prop size. Ideal range is 30-50%.';
+      else if (avgHoverThrottle > 50) reason = 'Slightly high but acceptable. You have limited power margin for aggressive maneuvers.';
+      else reason = 'Within ideal range (30-50%). Good power-to-weight ratio.';
+      recs.push({ title: 'Hover Throttle', value: `${avgHoverThrottle.toFixed(1)}%`, reason });
+    }
   }
 
   // Max throttle recommendation
   if (ctun.length > 0) {
-    const maxThrottle = max(ctun.map(c => (c.ThO||0) * 100));
-    const avgThrottle = avg(ctun.filter(c => (c.ThO||0) > 0.05).map(c => c.ThO * 100));
+    const rawThrottles = ctun.map(c => c.ThO || 0);
+    // Normalize: plane uses 0-100, copter uses 0-1
+    const normFactor = rawThrottles.some(t => t > 1.5) ? 1 : 100;
+    const maxThrottle = max(rawThrottles) * normFactor;
+    const avgThrottle = avg(rawThrottles.filter(t => t * normFactor > 5)) * normFactor;
     recs.push({
       title: 'Throttle Usage',
       value: `Max: ${maxThrottle.toFixed(0)}% | Avg: ${avgThrottle.toFixed(0)}%`,
       reason: maxThrottle > 85 ?
-        'You hit high throttle during this flight. For max performance, ensure MOT_THST_HOVER matches your actual hover throttle. For better cruise efficiency, fly at 50-60% throttle and use a more efficient prop pitch.' :
+        (vt === 'plane' ?
+          'High throttle usage during this flight. For better cruise efficiency, check prop pitch and consider flying at the optimal cruise speed.' :
+          'You hit high throttle during this flight. For max performance, ensure MOT_THST_HOVER matches your actual hover throttle. For better cruise efficiency, fly at 50-60% throttle.') :
         'Good throttle headroom. You have plenty of power reserve for emergencies.'
     });
   }
@@ -1136,12 +1182,30 @@ function calcTuning(data, phases, mission, params) {
 
 function renderMissionPlanning(mission) {
   const el = document.getElementById('tab-mission');
-  const sections = [
-    { name: 'Hover', data: mission.hover },
-    { name: 'Level Flight / Cruise', data: mission.cruise },
-    { name: 'Climb', data: mission.climb },
-    { name: 'Descent', data: mission.descent },
-  ];
+  const vt = mission.vehicleType;
+
+  // Build phase sections based on vehicle type
+  const sections = [];
+  if (vt === 'plane') {
+    sections.push({ name: 'Loiter (Circling)', data: mission.loiter });
+    sections.push({ name: 'Cruise (Level Flight)', data: mission.cruise });
+    sections.push({ name: 'Climb', data: mission.climb });
+    sections.push({ name: 'Descent', data: mission.descent });
+    sections.push({ name: 'Glide (Throttle Idle)', data: mission.glide });
+  } else if (vt === 'quadplane') {
+    sections.push({ name: 'Hover (VTOL)', data: mission.hover });
+    sections.push({ name: 'Loiter (Circling)', data: mission.loiter });
+    sections.push({ name: 'Cruise (Forward Flight)', data: mission.cruise });
+    sections.push({ name: 'Climb', data: mission.climb });
+    sections.push({ name: 'Descent', data: mission.descent });
+    sections.push({ name: 'Glide (Throttle Idle)', data: mission.glide });
+  } else {
+    // Copter / Rover / Unknown
+    sections.push({ name: 'Hover', data: mission.hover });
+    sections.push({ name: 'Level Flight / Cruise', data: mission.cruise });
+    sections.push({ name: 'Climb', data: mission.climb });
+    sections.push({ name: 'Descent', data: mission.descent });
+  }
 
   let html = '';
   for (const s of sections) {
@@ -1162,7 +1226,8 @@ function renderMissionPlanning(mission) {
   html += dataItem('Used', mission.usedWh.toFixed(1), 'Wh');
   html += dataItem('Start Voltage', mission.startVolt.toFixed(2), 'V');
   html += dataItem('End Voltage', mission.endVolt.toFixed(2), 'V');
-  html += dataItem('Hover Endurance', mission.hoverEndurance.toFixed(1), 'min');
+  const primaryLabel = vt === 'plane' ? 'Loiter Endurance' : vt === 'quadplane' ? 'Hover Endurance' : 'Hover Endurance';
+  html += dataItem(primaryLabel, mission.primaryEndurance.toFixed(1), 'min');
   html += dataItem('Cruise Endurance', mission.cruiseEndurance.toFixed(1), 'min');
   html += dataItem('Cruise Range', mission.cruiseRange.toFixed(2), 'km');
   html += dataItem('Avg Climb Rate', mission.avgClimbRate.toFixed(2), 'm/s');
@@ -1465,7 +1530,13 @@ function exportTXT() {
   txt += `\n${'='.repeat(50)}\n`;
   txt += `SECTION 1: MISSION PLANNING DATA\n`;
   txt += `${'='.repeat(50)}\n\n`;
-  for (const [name, data] of [['HOVER', mission.hover], ['CRUISE', mission.cruise], ['CLIMB', mission.climb], ['DESCENT', mission.descent]]) {
+  const vt = mission.vehicleType;
+  const phaseList = vt === 'plane' ?
+    [['LOITER (CIRCLING)', mission.loiter], ['CRUISE', mission.cruise], ['CLIMB', mission.climb], ['DESCENT', mission.descent], ['GLIDE (THROTTLE IDLE)', mission.glide]] :
+    vt === 'quadplane' ?
+    [['HOVER (VTOL)', mission.hover], ['LOITER (CIRCLING)', mission.loiter], ['CRUISE', mission.cruise], ['CLIMB', mission.climb], ['DESCENT', mission.descent], ['GLIDE', mission.glide]] :
+    [['HOVER', mission.hover], ['CRUISE', mission.cruise], ['CLIMB', mission.climb], ['DESCENT', mission.descent]];
+  for (const [name, data] of phaseList) {
     txt += `--- ${name} ---\n`;
     txt += `  Amps/Hour:   ${data.ampsPerHour.toFixed(2)} A/hr\n`;
     txt += `  Amps/Min:    ${data.ampsPerMin.toFixed(3)} A/min\n`;
@@ -1479,7 +1550,8 @@ function exportTXT() {
   txt += `--- CAPACITY & ENDURANCE ---\n`;
   txt += `  Used:             ${mission.usedMah.toFixed(0)} mAh / ${mission.usedWh.toFixed(1)} Wh\n`;
   txt += `  Voltage:          ${mission.startVolt.toFixed(2)}V -> ${mission.endVolt.toFixed(2)}V\n`;
-  txt += `  Hover Endurance:  ${mission.hoverEndurance.toFixed(1)} min\n`;
+  const primaryEndLabel = vt === 'plane' ? 'Loiter Endurance' : 'Hover Endurance';
+  txt += `  ${primaryEndLabel}:  ${mission.primaryEndurance.toFixed(1)} min\n`;
   txt += `  Cruise Endurance: ${mission.cruiseEndurance.toFixed(1)} min\n`;
   txt += `  Cruise Range:     ${mission.cruiseRange.toFixed(2)} km\n`;
   txt += `  Avg Climb Rate:   ${mission.avgClimbRate.toFixed(2)} m/s\n`;
@@ -1627,7 +1699,7 @@ function runAnalysis(parsed, fileName) {
     _analysisResult = { mission, health, report, tuning, fileName, parsed };
 
     // Render
-    renderFlightInfo(parsed, fileName, report);
+    renderFlightInfo(parsed, fileName, report, mission.vehicleType);
     renderMissionPlanning(mission);
     renderHealth(health);
     renderFlightReport(report);
@@ -1643,14 +1715,16 @@ function runAnalysis(parsed, fileName) {
   }, 50);
 }
 
-function renderFlightInfo(parsed, fileName, report) {
+function renderFlightInfo(parsed, fileName, report, vehicleType) {
   const el = document.getElementById('flightInfo');
   const typeCounts = {};
   for (const [name, msgs] of Object.entries(parsed.data)) {
     typeCounts[name] = msgs.length;
   }
+  const vtLabel = { copter: 'Copter', plane: 'Plane', quadplane: 'QuadPlane (VTOL)', unknown: 'Unknown' }[vehicleType] || vehicleType;
   el.innerHTML = `
     <span><strong>File:</strong> ${fileName}</span>
+    <span><strong>Vehicle:</strong> ${vtLabel}</span>
     <span><strong>Size:</strong> ${(parsed.fileSize/1024/1024).toFixed(1)} MB</span>
     <span><strong>Messages:</strong> ${parsed.msgCount.toLocaleString()}</span>
     <span><strong>Duration:</strong> ${report.durationMin?.toFixed(1) || '?'} min</span>
