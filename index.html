@@ -1,0 +1,1643 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Flight Analyzer — ArduPilot Log Report</title>
+<style>
+:root {
+  --bg: #0f1117;
+  --surface: #1a1d27;
+  --surface2: #242836;
+  --border: #2e3348;
+  --text: #e4e6f0;
+  --text2: #9499b3;
+  --accent: #5b8af5;
+  --accent2: #4a6fd4;
+  --green: #4caf87;
+  --yellow: #e8b339;
+  --red: #e25555;
+  --orange: #e88a39;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'Segoe UI', -apple-system, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+}
+.header {
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  padding: 16px 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.header h1 { font-size: 20px; font-weight: 600; }
+.header h1 span { color: var(--accent); }
+.header-actions { display: flex; gap: 10px; align-items: center; }
+.btn {
+  padding: 8px 16px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface2);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 13px;
+  transition: all 0.15s;
+}
+.btn:hover { background: var(--border); }
+.btn-primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.btn-primary:hover { background: var(--accent2); }
+.btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* Landing */
+#landing {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: calc(100vh - 60px);
+  gap: 24px;
+}
+.drop-zone {
+  width: 500px;
+  max-width: 90vw;
+  border: 2px dashed var(--border);
+  border-radius: 12px;
+  padding: 60px 40px;
+  text-align: center;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.drop-zone:hover, .drop-zone.drag-over {
+  border-color: var(--accent);
+  background: rgba(91,138,245,0.05);
+}
+.drop-zone h2 { font-size: 18px; margin-bottom: 8px; }
+.drop-zone p { color: var(--text2); font-size: 14px; }
+.drop-zone .icon { font-size: 48px; margin-bottom: 16px; color: var(--text2); }
+
+/* Progress */
+#progress-wrap {
+  display: none;
+  width: 500px;
+  max-width: 90vw;
+}
+.progress-bar {
+  height: 6px;
+  background: var(--surface2);
+  border-radius: 3px;
+  overflow: hidden;
+  margin-top: 12px;
+}
+.progress-fill {
+  height: 100%;
+  background: var(--accent);
+  width: 0%;
+  transition: width 0.2s;
+  border-radius: 3px;
+}
+#progress-text {
+  font-size: 13px;
+  color: var(--text2);
+  margin-top: 8px;
+  text-align: center;
+}
+
+/* Report */
+#report { display: none; }
+.flight-info {
+  background: var(--surface);
+  padding: 12px 24px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  gap: 24px;
+  flex-wrap: wrap;
+  font-size: 13px;
+  color: var(--text2);
+}
+.flight-info strong { color: var(--text); }
+
+/* Tabs */
+.tabs {
+  display: flex;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  padding: 0 24px;
+  overflow-x: auto;
+}
+.tab {
+  padding: 12px 20px;
+  font-size: 14px;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  color: var(--text2);
+  white-space: nowrap;
+  transition: all 0.15s;
+}
+.tab:hover { color: var(--text); }
+.tab.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+.tab-content {
+  display: none;
+  padding: 24px;
+  max-width: 1400px;
+  margin: 0 auto;
+}
+.tab-content.active { display: block; }
+
+/* Cards */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 20px;
+  margin-bottom: 16px;
+}
+.card h3 {
+  font-size: 15px;
+  font-weight: 600;
+  margin-bottom: 12px;
+  color: var(--accent);
+}
+.card h4 {
+  font-size: 13px;
+  font-weight: 600;
+  margin: 12px 0 8px;
+  color: var(--text2);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+/* Data grid for Section 1 */
+.data-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 12px;
+}
+.data-item {
+  background: var(--surface2);
+  border-radius: 6px;
+  padding: 12px;
+}
+.data-item .label {
+  font-size: 11px;
+  color: var(--text2);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 4px;
+}
+.data-item .value {
+  font-size: 20px;
+  font-weight: 600;
+}
+.data-item .unit {
+  font-size: 12px;
+  color: var(--text2);
+  margin-left: 2px;
+}
+
+/* Tables */
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+th, td {
+  padding: 8px 12px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+}
+th {
+  font-weight: 600;
+  color: var(--text2);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+td { color: var(--text); }
+tr:last-child td { border-bottom: none; }
+
+/* Status badges */
+.badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.badge-good { background: rgba(76,175,135,0.15); color: var(--green); }
+.badge-warn { background: rgba(232,179,57,0.15); color: var(--yellow); }
+.badge-bad { background: rgba(226,85,85,0.15); color: var(--red); }
+
+/* Health items */
+.health-item {
+  padding: 14px 0;
+  border-bottom: 1px solid var(--border);
+}
+.health-item:last-child { border-bottom: none; }
+.health-title {
+  font-weight: 600;
+  font-size: 14px;
+  margin-bottom: 4px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.health-desc {
+  font-size: 13px;
+  color: var(--text2);
+  line-height: 1.5;
+}
+
+/* Tuning items */
+.tune-item {
+  padding: 14px 0;
+  border-bottom: 1px solid var(--border);
+}
+.tune-item:last-child { border-bottom: none; }
+.tune-title { font-weight: 600; margin-bottom: 4px; }
+.tune-value { font-size: 15px; color: var(--accent); margin-bottom: 4px; }
+.tune-reason { font-size: 13px; color: var(--text2); line-height: 1.5; }
+
+/* Charts */
+.chart-container {
+  position: relative;
+  height: 300px;
+  margin: 12px 0;
+}
+.chart-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+@media (max-width: 900px) {
+  .chart-row { grid-template-columns: 1fr; }
+}
+
+/* Report text */
+.report-text {
+  font-size: 14px;
+  line-height: 1.7;
+  color: var(--text);
+}
+.report-text p { margin-bottom: 12px; }
+.report-text strong { color: var(--accent); }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1><span>Flight</span> Analyzer</h1>
+  <div class="header-actions">
+    <button class="btn" id="btn-new" style="display:none" onclick="resetApp()">New Analysis</button>
+    <button class="btn" id="btn-export" style="display:none" onclick="exportTXT()">Export TXT</button>
+  </div>
+</div>
+
+<div id="landing">
+  <div class="drop-zone" id="dropZone">
+    <div class="icon">&#128202;</div>
+    <h2>Open ArduPilot Flight Log</h2>
+    <p>Click to browse or drag & drop a .BIN file</p>
+    <input type="file" id="fileInput" accept=".bin,.BIN" style="display:none">
+  </div>
+  <div id="progress-wrap">
+    <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
+    <div id="progress-text">Preparing...</div>
+  </div>
+</div>
+
+<div id="report">
+  <div class="flight-info" id="flightInfo"></div>
+  <div class="tabs" id="tabBar">
+    <div class="tab active" data-tab="mission">Mission Planning</div>
+    <div class="tab" data-tab="health">Troubleshooting</div>
+    <div class="tab" data-tab="flight">Flight Report</div>
+    <div class="tab" data-tab="tuning">Tuning</div>
+    <div class="tab" data-tab="charts">Charts</div>
+  </div>
+  <div class="tab-content active" id="tab-mission"></div>
+  <div class="tab-content" id="tab-health"></div>
+  <div class="tab-content" id="tab-flight"></div>
+  <div class="tab-content" id="tab-tuning"></div>
+  <div class="tab-content" id="tab-charts"></div>
+</div>
+
+<!-- Chart.js will be loaded from CDN on first use, with inline fallback info -->
+<script>
+// ============================================================
+// ARDUPILOT BINARY LOG PARSER
+// ============================================================
+
+const HEAD1 = 0xA3, HEAD2 = 0x95;
+const FMT_TYPE = 128; // FMT message type ID is always 128
+const FMT_LEN = 89;   // FMT message is always 89 bytes
+
+// Format char -> { size, read(dv, offset) -> value, mult }
+const FORMAT_MAP = {
+  'a': { size: 64, read: (dv,o) => { let a=[]; for(let i=0;i<32;i++) a.push(dv.getInt16(o+i*2,true)); return a; }},
+  'b': { size: 1,  read: (dv,o) => dv.getInt8(o) },
+  'B': { size: 1,  read: (dv,o) => dv.getUint8(o) },
+  'h': { size: 2,  read: (dv,o) => dv.getInt16(o,true) },
+  'H': { size: 2,  read: (dv,o) => dv.getUint16(o,true) },
+  'i': { size: 4,  read: (dv,o) => dv.getInt32(o,true) },
+  'I': { size: 4,  read: (dv,o) => dv.getUint32(o,true) },
+  'f': { size: 4,  read: (dv,o) => dv.getFloat32(o,true) },
+  'd': { size: 8,  read: (dv,o) => dv.getFloat64(o,true) },
+  'q': { size: 8,  read: (dv,o) => Number(dv.getBigInt64(o,true)) },
+  'Q': { size: 8,  read: (dv,o) => Number(dv.getBigUint64(o,true)) },
+  'n': { size: 4,  read: (dv,o) => readStr(dv,o,4) },
+  'N': { size: 16, read: (dv,o) => readStr(dv,o,16) },
+  'Z': { size: 64, read: (dv,o) => readStr(dv,o,64) },
+  'c': { size: 2,  read: (dv,o) => dv.getInt16(o,true) * 0.01 },
+  'C': { size: 2,  read: (dv,o) => dv.getUint16(o,true) * 0.01 },
+  'e': { size: 4,  read: (dv,o) => dv.getInt32(o,true) * 0.01 },
+  'E': { size: 4,  read: (dv,o) => dv.getUint32(o,true) * 0.01 },
+  'L': { size: 4,  read: (dv,o) => dv.getInt32(o,true) * 1e-7 },
+  'M': { size: 1,  read: (dv,o) => dv.getUint8(o) },
+  'g': { size: 2,  read: (dv,o) => readFloat16(dv,o) },
+};
+
+function readStr(dv, offset, len) {
+  let s = '';
+  for (let i = 0; i < len; i++) {
+    const c = dv.getUint8(offset + i);
+    if (c === 0) break;
+    s += String.fromCharCode(c);
+  }
+  return s;
+}
+
+function readFloat16(dv, offset) {
+  const h = dv.getUint16(offset, true);
+  const sign = (h >> 15) & 1;
+  const exp = (h >> 10) & 0x1f;
+  const frac = h & 0x3ff;
+  if (exp === 0) return (sign ? -1 : 1) * 2**-14 * (frac / 1024);
+  if (exp === 31) return frac ? NaN : (sign ? -Infinity : Infinity);
+  return (sign ? -1 : 1) * 2**(exp - 15) * (1 + frac / 1024);
+}
+
+// Build an unpacker function for a format string
+function buildUnpacker(formatStr, columns) {
+  const fields = [];
+  for (const c of formatStr) {
+    const fm = FORMAT_MAP[c];
+    if (!fm) { console.warn('Unknown format char:', c); return null; }
+    fields.push({ char: c, size: fm.size, read: fm.read });
+  }
+  return function(dv, offset) {
+    const msg = {};
+    let pos = offset;
+    for (let i = 0; i < fields.length; i++) {
+      msg[columns[i]] = fields[i].read(dv, pos);
+      pos += fields[i].size;
+    }
+    return msg;
+  };
+}
+
+// Parse FMT message at a given offset (after the 3-byte header)
+function parseFMT(dv, offset) {
+  const type = dv.getUint8(offset);
+  const length = dv.getUint8(offset + 1);
+  const name = readStr(dv, offset + 2, 4);
+  const format = readStr(dv, offset + 6, 16);
+  const columns = readStr(dv, offset + 22, 64);
+  return { type, length, name, format, columns: columns.split(',') };
+}
+
+// Main parse function — reads entire ArrayBuffer
+function parseLog(buffer, onProgress) {
+  const dv = new DataView(buffer);
+  const len = buffer.byteLength;
+  const formats = {};
+  const unpackers = {};
+  const data = {}; // { typeName: [msg, msg, ...] }
+
+  // Types we care about for the report
+  const WANTED = new Set([
+    'BAT','ESC','CTUN','ATT','VIBE','RCOU','GPS','RATE',
+    'MOTB','BARO','MODE','PARM','MSG','RCIN','POWR',
+    'BCL','IMU','EV','VER','PSCD','CMD'
+  ]);
+
+  // First, register FMT type 128
+  formats[FMT_TYPE] = {
+    type: FMT_TYPE, length: FMT_LEN, name: 'FMT',
+    format: 'BBnNZ', columns: ['Type','Length','Name','Format','Columns']
+  };
+
+  let offset = 0;
+  let msgCount = 0;
+  let lastProgress = 0;
+  const params = {};
+  const modes = [];
+  const messages = [];
+
+  while (offset < len - 2) {
+    // Find header
+    if (dv.getUint8(offset) !== HEAD1 || dv.getUint8(offset + 1) !== HEAD2) {
+      offset++;
+      continue;
+    }
+
+    const msgType = dv.getUint8(offset + 2);
+    const fmt = formats[msgType];
+
+    if (!fmt) {
+      // Unknown type — if it's before we've seen its FMT, skip
+      offset++;
+      continue;
+    }
+
+    if (offset + fmt.length > len) break; // truncated
+
+    const bodyOffset = offset + 3;
+
+    // Handle FMT messages to learn format of other types
+    if (msgType === FMT_TYPE) {
+      const fmtMsg = parseFMT(dv, bodyOffset);
+      formats[fmtMsg.type] = fmtMsg;
+    }
+
+    // Extract messages we need
+    if (WANTED.has(fmt.name) || msgType === FMT_TYPE) {
+      if (!unpackers[msgType] && fmt.format && fmt.columns.length > 0) {
+        unpackers[msgType] = buildUnpacker(fmt.format, fmt.columns);
+      }
+      if (unpackers[msgType]) {
+        try {
+          const msg = unpackers[msgType](dv, bodyOffset);
+          if (!data[fmt.name]) data[fmt.name] = [];
+          data[fmt.name].push(msg);
+
+          // Track params
+          if (fmt.name === 'PARM') {
+            params[msg.Name] = msg.Value;
+          }
+          // Track mode changes
+          if (fmt.name === 'MODE') {
+            modes.push({ timeUS: msg.TimeUS, mode: msg.Mode || msg.ModeNum, name: msg.Name || '' });
+          }
+          if (fmt.name === 'MSG') {
+            messages.push(msg);
+          }
+        } catch(e) {
+          // Skip corrupt message
+        }
+      }
+    }
+
+    offset += fmt.length;
+    msgCount++;
+
+    // Progress update
+    const pct = (offset / len * 100)|0;
+    if (pct > lastProgress) {
+      lastProgress = pct;
+      if (onProgress) onProgress(pct, msgCount);
+    }
+  }
+
+  return { data, params, modes, messages, formats, msgCount, fileSize: len };
+}
+
+
+// ============================================================
+// FLIGHT PHASE DETECTION
+// ============================================================
+
+function detectPhases(data) {
+  const ctun = data.CTUN || [];
+  const gps = data.GPS || [];
+  const bat = data.BAT || [];
+
+  if (ctun.length === 0) return { hover:[], climb:[], descent:[], cruise:[], ground:[] };
+
+  // Build time-indexed lookup for GPS speed
+  const gpsSpeedMap = new Map();
+  for (const g of gps) {
+    if (g.TimeUS) gpsSpeedMap.set(Math.round(g.TimeUS / 100000), g.Spd);
+  }
+
+  // Build time-indexed lookup for BAT
+  const batMap = new Map();
+  for (const b of bat) {
+    if (b.TimeUS) batMap.set(Math.round(b.TimeUS / 100000), b);
+  }
+
+  const phases = { hover: [], climb: [], descent: [], cruise: [], ground: [] };
+
+  for (const c of ctun) {
+    const t = c.TimeUS;
+    const tKey = Math.round(t / 100000);
+    const throttle = c.ThO !== undefined ? c.ThO : 0;
+    const climbRate = c.CRt !== undefined ? c.CRt : 0;
+    const alt = c.Alt !== undefined ? c.Alt : 0;
+    const speed = gpsSpeedMap.get(tKey) || 0;
+    const batMsg = batMap.get(tKey);
+
+    const sample = {
+      timeUS: t,
+      time: t / 1e6,
+      throttle, climbRate, alt, speed,
+      voltage: batMsg ? batMsg.Volt : null,
+      current: batMsg ? batMsg.Curr : null,
+      power: batMsg ? batMsg.Volt * batMsg.Curr : null,
+    };
+
+    if (throttle < 0.05) {
+      phases.ground.push(sample);
+    } else if (climbRate > 0.5) {
+      phases.climb.push(sample);
+    } else if (climbRate < -0.5) {
+      phases.descent.push(sample);
+    } else if (speed > 1.5) {
+      phases.cruise.push(sample);
+    } else {
+      phases.hover.push(sample);
+    }
+  }
+
+  return phases;
+}
+
+
+// ============================================================
+// ANALYSIS CALCULATIONS
+// ============================================================
+
+function avg(arr) { return arr.length ? arr.reduce((a,b)=>a+b,0)/arr.length : 0; }
+function max(arr) { return arr.length ? Math.max(...arr) : 0; }
+function min(arr) { return arr.length ? Math.min(...arr) : 0; }
+function std(arr) {
+  if (arr.length < 2) return 0;
+  const m = avg(arr);
+  return Math.sqrt(arr.reduce((s,v) => s + (v-m)**2, 0) / (arr.length-1));
+}
+
+function calcPhaseRates(samples) {
+  const currents = samples.filter(s => s.current !== null).map(s => s.current);
+  const powers = samples.filter(s => s.power !== null).map(s => s.power);
+  const voltages = samples.filter(s => s.voltage !== null).map(s => s.voltage);
+  const avgCurrent = avg(currents);
+  const avgPower = avg(powers);
+  const avgVoltage = avg(voltages);
+
+  // mAh per hour = amps * 1000
+  return {
+    ampsAvg: avgCurrent,
+    ampsPerHour: avgCurrent,
+    ampsPerMin: avgCurrent / 60,
+    wattsAvg: avgPower,
+    wattsPerHour: avgPower,
+    wattsPerMin: avgPower / 60,
+    mahPerHour: avgCurrent * 1000,
+    mahPerMin: avgCurrent * 1000 / 60,
+    voltageAvg: avgVoltage,
+    samples: samples.length,
+  };
+}
+
+function calcMissionPlanning(data, phases) {
+  const bat = data.BAT || [];
+  const gps = data.GPS || [];
+  const ctun = data.CTUN || [];
+
+  // Usable capacity
+  let startMah = 0, endMah = 0, startWh = 0, endWh = 0;
+  let startVolt = 0, endVolt = 0;
+  if (bat.length > 1) {
+    startMah = bat[0].CurrTot || 0;
+    endMah = bat[bat.length-1].CurrTot || 0;
+    startWh = bat[0].EnrgTot || 0;
+    endWh = bat[bat.length-1].EnrgTot || 0;
+    startVolt = bat[0].Volt || 0;
+    endVolt = bat[bat.length-1].Volt || 0;
+  }
+  const usedMah = (endMah - startMah) * 1000; // convert Ah to mAh
+  const usedWh = endWh - startWh;
+
+  // Phase rates
+  const hover = calcPhaseRates(phases.hover);
+  const climb = calcPhaseRates(phases.climb);
+  const descent = calcPhaseRates(phases.descent);
+  const cruise = calcPhaseRates(phases.cruise);
+
+  // Climb / descent rates
+  const climbRates = phases.climb.map(s => s.climbRate);
+  const descentRates = phases.descent.map(s => Math.abs(s.climbRate));
+  const avgClimbRate = avg(climbRates);
+  const avgDescentRate = avg(descentRates);
+
+  // Cruise speed
+  const cruiseSpeeds = phases.cruise.map(s => s.speed);
+  const avgCruiseSpeed = avg(cruiseSpeeds);
+
+  // Endurance estimates (if we have hover/cruise current)
+  const totalCapMah = usedMah > 0 ? usedMah : (bat.length > 0 && bat[0].RemPct > 0 ?
+    usedMah / (1 - bat[bat.length-1].RemPct / 100) : 0);
+  const hoverEndurance = hover.ampsPerHour > 0 ? (totalCapMah / hover.mahPerHour * 60) : 0;
+  const cruiseEndurance = cruise.ampsPerHour > 0 ? (totalCapMah / cruise.mahPerHour * 60) : 0;
+  const cruiseRange = cruiseEndurance > 0 ? (avgCruiseSpeed * cruiseEndurance * 60 / 1000) : 0;
+
+  return {
+    hover, climb, descent, cruise,
+    usedMah, usedWh, totalCapMah,
+    startVolt, endVolt,
+    avgClimbRate, avgDescentRate,
+    avgCruiseSpeed, avgCruiseSpeedKmh: avgCruiseSpeed * 3.6,
+    hoverEndurance, cruiseEndurance, cruiseRange,
+  };
+}
+
+function calcTroubleshooting(data) {
+  const esc = data.ESC || [];
+  const vibe = data.VIBE || [];
+  const bat = data.BAT || [];
+  const att = data.ATT || [];
+  const gps = data.GPS || [];
+
+  const results = [];
+
+  // Motor RPM imbalance
+  if (esc.length > 0) {
+    const motorData = {};
+    for (const e of esc) {
+      const inst = e.Instance !== undefined ? e.Instance : 0;
+      if (!motorData[inst]) motorData[inst] = { rpms:[], currs:[], temps:[], escTemps:[] };
+      if (e.RPM > 0) motorData[inst].rpms.push(e.RPM);
+      if (e.Curr > 0) motorData[inst].currs.push(e.Curr);
+      if (e.MotTemp > 0) motorData[inst].escTemps.push(e.MotTemp);
+      if (e.Temp > 0) motorData[inst].temps.push(e.Temp);
+    }
+
+    const motors = Object.keys(motorData).sort((a,b) => a-b);
+    if (motors.length > 1) {
+      const avgRpms = motors.map(m => ({ motor: m, avg: avg(motorData[m].rpms) }));
+      const rpmValues = avgRpms.map(r => r.avg).filter(v => v > 0);
+      const rpmSpread = rpmValues.length > 1 ? (max(rpmValues) - min(rpmValues)) / avg(rpmValues) * 100 : 0;
+
+      let rpmStatus = 'good', rpmBadge = 'badge-good';
+      if (rpmSpread > 10) { rpmStatus = 'bad'; rpmBadge = 'badge-bad'; }
+      else if (rpmSpread > 5) { rpmStatus = 'warn'; rpmBadge = 'badge-warn'; }
+
+      let desc = `RPM spread across motors: ${rpmSpread.toFixed(1)}%. `;
+      avgRpms.forEach(r => { desc += `Motor ${r.motor}: ${r.avg.toFixed(0)} RPM avg. `; });
+      if (rpmStatus === 'bad') desc += 'This indicates a prop imbalance, damaged prop, or failing motor.';
+      else if (rpmStatus === 'warn') desc += 'Slight imbalance — check prop condition and tightness.';
+      else desc += 'Motors are well balanced.';
+
+      results.push({ title: 'Motor RPM Balance', status: rpmStatus, badge: rpmBadge, desc });
+
+      // Current imbalance
+      const avgCurrs = motors.map(m => ({ motor: m, avg: avg(motorData[m].currs) }));
+      const currValues = avgCurrs.map(c => c.avg).filter(v => v > 0);
+      const currSpread = currValues.length > 1 ? (max(currValues) - min(currValues)) / avg(currValues) * 100 : 0;
+      let currStatus = 'good', currBadge = 'badge-good';
+      if (currSpread > 15) { currStatus = 'bad'; currBadge = 'badge-bad'; }
+      else if (currSpread > 8) { currStatus = 'warn'; currBadge = 'badge-warn'; }
+
+      let currDesc = `Current spread: ${currSpread.toFixed(1)}%. `;
+      avgCurrs.forEach(c => { currDesc += `Motor ${c.motor}: ${c.avg.toFixed(2)}A avg. `; });
+      if (currStatus === 'bad') currDesc += 'One motor is working significantly harder — check for mechanical drag, CG offset, or damaged motor.';
+      else if (currStatus === 'warn') currDesc += 'Minor imbalance — may indicate slight CG offset or prop wear.';
+      else currDesc += 'Current draw is evenly distributed.';
+
+      results.push({ title: 'Motor Current Balance', status: currStatus, badge: currBadge, desc: currDesc });
+
+      // Motor/ESC temps
+      const maxTemps = motors.map(m => ({
+        motor: m,
+        escMax: max(motorData[m].temps),
+        motorMax: max(motorData[m].escTemps)
+      }));
+      let tempStatus = 'good', tempBadge = 'badge-good', tempDesc = '';
+      for (const t of maxTemps) {
+        const highest = Math.max(t.escMax, t.motorMax);
+        tempDesc += `Motor ${t.motor}: ESC ${t.escMax.toFixed(0)}°C, Motor ${t.motorMax.toFixed(0)}°C. `;
+        if (highest > 100) { tempStatus = 'bad'; tempBadge = 'badge-bad'; }
+        else if (highest > 70) { tempStatus = tempStatus === 'bad' ? 'bad' : 'warn'; tempBadge = tempStatus === 'bad' ? 'badge-bad' : 'badge-warn'; }
+      }
+      if (tempStatus === 'bad') tempDesc += 'Dangerously high temperatures — risk of ESC or motor failure.';
+      else if (tempStatus === 'warn') tempDesc += 'Temperatures are elevated — monitor for increase over time.';
+      else tempDesc += 'All temperatures within normal range.';
+
+      results.push({ title: 'Motor/ESC Temperatures', status: tempStatus, badge: tempBadge, desc: tempDesc });
+    }
+  }
+
+  // Vibration
+  if (vibe.length > 0) {
+    const vx = vibe.map(v => v.VibeX);
+    const vy = vibe.map(v => v.VibeY);
+    const vz = vibe.map(v => v.VibeZ);
+    const clips = vibe.reduce((s,v) => s + (v.Clip || 0), 0);
+    const maxVibe = Math.max(avg(vx), avg(vy), avg(vz));
+
+    let vibeStatus = 'good', vibeBadge = 'badge-good';
+    if (maxVibe > 60 || clips > 0) { vibeStatus = 'bad'; vibeBadge = 'badge-bad'; }
+    else if (maxVibe > 30) { vibeStatus = 'warn'; vibeBadge = 'badge-warn'; }
+
+    let vibeDesc = `Avg vibration — X: ${avg(vx).toFixed(1)}, Y: ${avg(vy).toFixed(1)}, Z: ${avg(vz).toFixed(1)} m/s². `;
+    vibeDesc += `Clipping events: ${clips}. `;
+    if (vibeStatus === 'bad') vibeDesc += clips > 0 ?
+      'Clipping detected — accelerometer saturated. Check for loose props, damaged frame, or motor mount issues.' :
+      'Vibration levels are high — props need balancing or frame has structural issues.';
+    else if (vibeStatus === 'warn') vibeDesc += 'Vibration is elevated — consider balancing props or checking motor mounts.';
+    else vibeDesc += 'Vibration levels are healthy.';
+
+    results.push({ title: 'Vibration Levels', status: vibeStatus, badge: vibeBadge, desc: vibeDesc });
+
+    // Vibration trend
+    if (vibe.length > 20) {
+      const firstThird = vibe.slice(0, Math.floor(vibe.length/3));
+      const lastThird = vibe.slice(Math.floor(vibe.length*2/3));
+      const earlyAvg = avg(firstThird.map(v => Math.sqrt(v.VibeX**2 + v.VibeY**2 + v.VibeZ**2)));
+      const lateAvg = avg(lastThird.map(v => Math.sqrt(v.VibeX**2 + v.VibeY**2 + v.VibeZ**2)));
+      const trendPct = earlyAvg > 0 ? ((lateAvg - earlyAvg) / earlyAvg * 100) : 0;
+
+      let trendStatus = 'good', trendBadge = 'badge-good';
+      let trendDesc = `Vibration changed ${trendPct > 0 ? '+' : ''}${trendPct.toFixed(1)}% from start to end of flight. `;
+      if (trendPct > 20) { trendStatus = 'bad'; trendBadge = 'badge-bad'; trendDesc += 'Significant increase — something is loosening during flight (prop nut, motor mount, or frame fastener).'; }
+      else if (trendPct > 10) { trendStatus = 'warn'; trendBadge = 'badge-warn'; trendDesc += 'Noticeable increase — inspect prop nuts and motor mounts before next flight.'; }
+      else trendDesc += 'Stable vibration throughout flight — mechanical integrity is good.';
+
+      results.push({ title: 'Vibration Trend', status: trendStatus, badge: trendBadge, desc: trendDesc });
+    }
+  }
+
+  // Voltage sag
+  if (bat.length > 10) {
+    const voltages = bat.map(b => b.Volt).filter(v => v > 0);
+    const currents = bat.map(b => b.Curr).filter(v => v > 0);
+    const restVoltages = bat.filter(b => b.VoltR > 0).map(b => b.VoltR);
+    const maxCurr = max(currents);
+    const minVolt = min(voltages);
+    const maxVolt = max(voltages);
+    const sag = maxVolt - minVolt;
+    const sagPct = maxVolt > 0 ? (sag / maxVolt * 100) : 0;
+
+    let sagStatus = 'good', sagBadge = 'badge-good';
+    if (sagPct > 20) { sagStatus = 'bad'; sagBadge = 'badge-bad'; }
+    else if (sagPct > 10) { sagStatus = 'warn'; sagBadge = 'badge-warn'; }
+
+    let sagDesc = `Voltage range: ${maxVolt.toFixed(2)}V → ${minVolt.toFixed(2)}V (${sag.toFixed(2)}V sag, ${sagPct.toFixed(1)}%). `;
+    sagDesc += `Max current: ${maxCurr.toFixed(1)}A. `;
+    if (sagStatus === 'bad') sagDesc += 'Excessive voltage sag — battery may be worn, undersized, or too low C-rating for this load.';
+    else if (sagStatus === 'warn') sagDesc += 'Moderate sag — battery is working hard. Consider a higher C-rating pack.';
+    else sagDesc += 'Voltage sag is within normal limits.';
+
+    results.push({ title: 'Battery Voltage Sag', status: sagStatus, badge: sagBadge, desc: sagDesc });
+
+    // Battery resistance
+    const resistances = bat.filter(b => b.Res > 0).map(b => b.Res);
+    if (resistances.length > 0) {
+      const avgRes = avg(resistances);
+      let resStatus = 'good', resBadge = 'badge-good';
+      if (avgRes > 0.05) { resStatus = 'bad'; resBadge = 'badge-bad'; }
+      else if (avgRes > 0.02) { resStatus = 'warn'; resBadge = 'badge-warn'; }
+      let resDesc = `Average internal resistance: ${(avgRes*1000).toFixed(1)} mΩ. `;
+      if (resStatus === 'bad') resDesc += 'High resistance — battery is aging or damaged. Replace soon.';
+      else if (resStatus === 'warn') resDesc += 'Resistance is elevated — battery is showing age.';
+      else resDesc += 'Battery resistance is healthy.';
+      results.push({ title: 'Battery Resistance', status: resStatus, badge: resBadge, desc: resDesc });
+    }
+  }
+
+  // Attitude error
+  if (att.length > 10) {
+    const rollErr = att.map(a => Math.abs((a.DesRoll||0) - (a.Roll||0)));
+    const pitchErr = att.map(a => Math.abs((a.DesPitch||0) - (a.Pitch||0)));
+    const avgRollErr = avg(rollErr);
+    const avgPitchErr = avg(pitchErr);
+    const maxRollErr = max(rollErr);
+    const maxPitchErr = max(pitchErr);
+
+    let attStatus = 'good', attBadge = 'badge-good';
+    if (maxRollErr > 10 || maxPitchErr > 10) { attStatus = 'bad'; attBadge = 'badge-bad'; }
+    else if (maxRollErr > 5 || maxPitchErr > 5) { attStatus = 'warn'; attBadge = 'badge-warn'; }
+
+    let attDesc = `Avg attitude error — Roll: ${avgRollErr.toFixed(2)}°, Pitch: ${avgPitchErr.toFixed(2)}°. `;
+    attDesc += `Max error — Roll: ${maxRollErr.toFixed(1)}°, Pitch: ${maxPitchErr.toFixed(1)}°. `;
+    if (attStatus === 'bad') attDesc += 'Large attitude errors — possible CG issue, wind, or PID tuning problem.';
+    else if (attStatus === 'warn') attDesc += 'Moderate errors — could be wind or slightly off PID tuning.';
+    else attDesc += 'Attitude tracking is tight.';
+
+    results.push({ title: 'Attitude Tracking', status: attStatus, badge: attBadge, desc: attDesc });
+  }
+
+  // GPS health
+  if (gps.length > 0) {
+    const sats = gps.map(g => g.NSats).filter(v => v > 0);
+    const hdops = gps.map(g => g.HDop).filter(v => v > 0);
+    const statuses = gps.map(g => g.Status);
+    const avgSats = avg(sats);
+    const minSats = min(sats);
+    const avgHdop = avg(hdops);
+    const fixDrops = statuses.filter(s => s < 3).length;
+
+    let gpsStatus = 'good', gpsBadge = 'badge-good';
+    if (minSats < 6 || avgHdop > 2.0 || fixDrops > 5) { gpsStatus = 'bad'; gpsBadge = 'badge-bad'; }
+    else if (minSats < 8 || avgHdop > 1.5) { gpsStatus = 'warn'; gpsBadge = 'badge-warn'; }
+
+    let gpsDesc = `Avg satellites: ${avgSats.toFixed(0)}, min: ${minSats}. Avg HDop: ${avgHdop.toFixed(2)}. Fix dropouts: ${fixDrops}. `;
+    if (gpsStatus === 'bad') gpsDesc += 'GPS quality is poor — unreliable for autonomous flight.';
+    else if (gpsStatus === 'warn') gpsDesc += 'GPS quality is marginal — avoid precision missions.';
+    else gpsDesc += 'GPS signal is strong and reliable.';
+
+    results.push({ title: 'GPS Health', status: gpsStatus, badge: gpsBadge, desc: gpsDesc });
+  }
+
+  return results;
+}
+
+function calcFlightReport(data, phases, mission) {
+  const bat = data.BAT || [];
+  const gps = data.GPS || [];
+  const ctun = data.CTUN || [];
+  const esc = data.ESC || [];
+  const vibe = data.VIBE || [];
+  const modes = data.MODE || [];
+
+  const report = {};
+
+  // Duration
+  const allTimes = ctun.map(c => c.TimeUS).filter(t => t > 0);
+  if (allTimes.length > 1) {
+    report.durationSec = (allTimes[allTimes.length-1] - allTimes[0]) / 1e6;
+    report.durationMin = report.durationSec / 60;
+    report.startTimeUS = allTimes[0];
+  } else {
+    report.durationSec = 0;
+    report.durationMin = 0;
+  }
+
+  // Battery
+  if (bat.length > 1) {
+    report.startVolt = bat[0].Volt;
+    report.endVolt = bat[bat.length-1].Volt;
+    report.maxCurrent = max(bat.map(b => b.Curr));
+    report.maxCurrentTime = bat.find(b => b.Curr === report.maxCurrent)?.TimeUS;
+    report.totalMah = mission.usedMah;
+    report.totalWh = mission.usedWh;
+    report.batteryData = bat.map(b => ({ time: b.TimeUS/1e6, volt: b.Volt, curr: b.Curr }));
+  }
+
+  // Altitude and speed
+  if (gps.length > 0) {
+    const alts = gps.map(g => g.Alt).filter(v => v > 0);
+    const speeds = gps.map(g => g.Spd).filter(v => v >= 0);
+    report.maxAlt = max(alts);
+    report.maxSpeed = max(speeds);
+    report.maxSpeedKmh = report.maxSpeed * 3.6;
+
+    // Total distance
+    let dist = 0;
+    for (let i = 1; i < gps.length; i++) {
+      const dlat = (gps[i].Lat - gps[i-1].Lat) * 111139;
+      const dlng = (gps[i].Lng - gps[i-1].Lng) * 111139 * Math.cos(gps[i].Lat * Math.PI / 180);
+      dist += Math.sqrt(dlat*dlat + dlng*dlng);
+    }
+    report.totalDistM = dist;
+    report.totalDistKm = dist / 1000;
+  }
+
+  // Climb/descent rates
+  report.maxClimbRate = max(ctun.map(c => c.CRt || 0));
+  report.maxDescentRate = Math.abs(min(ctun.map(c => c.CRt || 0)));
+  report.avgClimbRate = mission.avgClimbRate;
+  report.avgDescentRate = mission.avgDescentRate;
+
+  // Per-motor summary
+  if (esc.length > 0) {
+    const motorSummary = {};
+    for (const e of esc) {
+      const inst = e.Instance !== undefined ? e.Instance : 0;
+      if (!motorSummary[inst]) motorSummary[inst] = { rpms:[], currs:[], temps:[], escTemps:[] };
+      if (e.RPM > 0) motorSummary[inst].rpms.push(e.RPM);
+      if (e.Curr > 0) motorSummary[inst].currs.push(e.Curr);
+      if (e.MotTemp > 0) motorSummary[inst].escTemps.push(e.MotTemp);
+      if (e.Temp > 0) motorSummary[inst].temps.push(e.Temp);
+    }
+    report.motors = Object.keys(motorSummary).sort((a,b) => a-b).map(m => ({
+      id: m,
+      avgRPM: avg(motorSummary[m].rpms),
+      maxRPM: max(motorSummary[m].rpms),
+      avgCurr: avg(motorSummary[m].currs),
+      maxCurr: max(motorSummary[m].currs),
+      maxTemp: max(motorSummary[m].temps),
+      maxMotorTemp: max(motorSummary[m].escTemps),
+    }));
+  }
+
+  // Vibration summary
+  if (vibe.length > 0) {
+    report.vibeAvgX = avg(vibe.map(v => v.VibeX));
+    report.vibeAvgY = avg(vibe.map(v => v.VibeY));
+    report.vibeAvgZ = avg(vibe.map(v => v.VibeZ));
+    report.totalClips = vibe.reduce((s,v) => s + (v.Clip||0), 0);
+  }
+
+  // Mode changes
+  report.modes = modes;
+
+  return report;
+}
+
+function calcTuning(data, phases, mission, params) {
+  const ctun = data.CTUN || [];
+  const rate = data.RATE || [];
+  const esc = data.ESC || [];
+  const bat = data.BAT || [];
+  const motb = data.MOTB || [];
+
+  const recs = [];
+
+  // Hover throttle
+  const hoverThrottles = phases.hover.map(s => s.throttle).filter(t => t > 0);
+  if (hoverThrottles.length > 0) {
+    const avgHoverThrottle = avg(hoverThrottles) * 100;
+    let title = 'Hover Throttle';
+    let value = `${avgHoverThrottle.toFixed(1)}%`;
+    let reason = '';
+    if (avgHoverThrottle < 20) {
+      reason = 'Very low hover throttle — vehicle is overpowered. Consider smaller props or lower KV motors for better efficiency. Ideal range is 30-50%.';
+    } else if (avgHoverThrottle > 60) {
+      reason = 'High hover throttle — vehicle is heavy for its motors/props. Reduce weight or increase motor/prop size. Ideal range is 30-50%.';
+    } else if (avgHoverThrottle > 50) {
+      reason = 'Slightly high but acceptable. You have limited power margin for aggressive maneuvers.';
+    } else {
+      reason = 'Within ideal range (30-50%). Good power-to-weight ratio.';
+    }
+    recs.push({ title, value, reason });
+  }
+
+  // Max throttle recommendation
+  if (ctun.length > 0) {
+    const maxThrottle = max(ctun.map(c => (c.ThO||0) * 100));
+    const avgThrottle = avg(ctun.filter(c => (c.ThO||0) > 0.05).map(c => c.ThO * 100));
+    recs.push({
+      title: 'Throttle Usage',
+      value: `Max: ${maxThrottle.toFixed(0)}% | Avg: ${avgThrottle.toFixed(0)}%`,
+      reason: maxThrottle > 85 ?
+        'You hit high throttle during this flight. For max performance, ensure MOT_THST_HOVER matches your actual hover throttle. For better cruise efficiency, fly at 50-60% throttle and use a more efficient prop pitch.' :
+        'Good throttle headroom. You have plenty of power reserve for emergencies.'
+    });
+  }
+
+  // PID analysis
+  if (rate.length > 100) {
+    const rollErrors = rate.map(r => Math.abs((r.RDes||0) - (r.R||0)));
+    const pitchErrors = rate.map(r => Math.abs((r.PDes||0) - (r.P||0)));
+    const yawErrors = rate.map(r => Math.abs((r.YDes||0) - (r.Y||0)));
+    const avgRollErr = avg(rollErrors);
+    const avgPitchErr = avg(pitchErrors);
+    const avgYawErr = avg(yawErrors);
+
+    let pidReason = `Avg rate error — Roll: ${avgRollErr.toFixed(2)}°/s, Pitch: ${avgPitchErr.toFixed(2)}°/s, Yaw: ${avgYawErr.toFixed(2)}°/s. `;
+    if (avgRollErr > 20 || avgPitchErr > 20) {
+      pidReason += 'Errors are high — PIDs are too low or there is mechanical flex. Increase Rate P and D gains.';
+    } else if (avgRollErr < 2 && avgPitchErr < 2) {
+      pidReason += 'Very tight tracking. Check for oscillation — you may be at the edge. If craft buzzes, reduce D.';
+    } else {
+      pidReason += 'Rate tracking is reasonable. Consider running AutoTune for optimal gains.';
+    }
+    recs.push({ title: 'PID Rate Tracking', value: `Roll: ${avgRollErr.toFixed(1)}°/s | Pitch: ${avgPitchErr.toFixed(1)}°/s`, reason: pidReason });
+  }
+
+  // Motor mix / CG
+  if (esc.length > 0) {
+    const motorData = {};
+    for (const e of esc) {
+      const inst = e.Instance !== undefined ? e.Instance : 0;
+      if (!motorData[inst]) motorData[inst] = [];
+      if (e.Curr > 0) motorData[inst].push(e.Curr);
+    }
+    const motors = Object.keys(motorData);
+    if (motors.length > 1) {
+      const avgCurrs = motors.map(m => avg(motorData[m]));
+      const currSpread = (max(avgCurrs) - min(avgCurrs)) / avg(avgCurrs) * 100;
+      if (currSpread > 8) {
+        const highMotor = motors[avgCurrs.indexOf(max(avgCurrs))];
+        recs.push({
+          title: 'CG / Motor Mix',
+          value: `${currSpread.toFixed(1)}% current imbalance`,
+          reason: `Motor ${highMotor} is working hardest (${max(avgCurrs).toFixed(2)}A avg). This suggests the CG (center of gravity) is shifted toward the opposite side. Move the battery or payload to balance the load.`
+        });
+      }
+    }
+  }
+
+  // Prop recommendation based on vibration
+  if (data.VIBE && data.VIBE.length > 0) {
+    const vibes = data.VIBE;
+    const avgMag = avg(vibes.map(v => Math.sqrt(v.VibeX**2 + v.VibeY**2 + v.VibeZ**2)));
+    const clips = vibes.reduce((s,v) => s + (v.Clip||0), 0);
+    if (avgMag > 30 || clips > 0) {
+      recs.push({
+        title: 'Prop Condition',
+        value: clips > 0 ? `${clips} clipping events` : `Vibe avg: ${avgMag.toFixed(1)} m/s²`,
+        reason: clips > 0 ?
+          'Accelerometer clipping indicates severe vibration. Balance or replace props immediately. Check motor mounts and frame bolts.' :
+          'Vibration is elevated. Balance props using a prop balancer, check for nicks or cracks, ensure prop nuts are tight.'
+      });
+    }
+  }
+
+  // Battery recommendation
+  if (bat.length > 10) {
+    const voltages = bat.map(b => b.Volt).filter(v => v > 0);
+    const currents = bat.map(b => b.Curr).filter(v => v > 0);
+    const sagPct = max(voltages) > 0 ? ((max(voltages) - min(voltages)) / max(voltages) * 100) : 0;
+    if (sagPct > 15) {
+      recs.push({
+        title: 'Battery Recommendation',
+        value: `${sagPct.toFixed(1)}% voltage sag`,
+        reason: `Significant voltage sag under load. Consider a battery with higher C-rating (continuous discharge rate) or a newer pack. Current max draw: ${max(currents).toFixed(1)}A.`
+      });
+    }
+  }
+
+  // Cruise speed sweet spot
+  if (phases.cruise.length > 10) {
+    const speedPower = phases.cruise.filter(s => s.power > 0 && s.speed > 0);
+    if (speedPower.length > 20) {
+      // Bin by speed
+      const bins = {};
+      for (const s of speedPower) {
+        const bin = Math.round(s.speed);
+        if (!bins[bin]) bins[bin] = [];
+        bins[bin].push(s.power);
+      }
+      let bestSpeed = 0, bestEfficiency = Infinity;
+      for (const [speed, powers] of Object.entries(bins)) {
+        if (powers.length < 3) continue;
+        const effic = avg(powers) / Number(speed); // watts per m/s
+        if (effic < bestEfficiency && Number(speed) > 1) {
+          bestEfficiency = effic;
+          bestSpeed = Number(speed);
+        }
+      }
+      if (bestSpeed > 0) {
+        recs.push({
+          title: 'Cruise Speed Sweet Spot',
+          value: `${bestSpeed.toFixed(0)} m/s (${(bestSpeed*3.6).toFixed(0)} km/h)`,
+          reason: `Most efficient cruise speed based on this flight's power-to-speed data. At this speed you get the most distance per watt-hour.`
+        });
+      }
+    }
+  }
+
+  return recs;
+}
+
+
+// ============================================================
+// HTML RENDERING
+// ============================================================
+
+function renderMissionPlanning(mission) {
+  const el = document.getElementById('tab-mission');
+  const sections = [
+    { name: 'Hover', data: mission.hover },
+    { name: 'Level Flight / Cruise', data: mission.cruise },
+    { name: 'Climb', data: mission.climb },
+    { name: 'Descent', data: mission.descent },
+  ];
+
+  let html = '';
+  for (const s of sections) {
+    html += `<div class="card"><h3>${s.name}</h3><div class="data-grid">`;
+    html += dataItem('Amps/Hour', s.data.ampsPerHour.toFixed(2), 'A/hr');
+    html += dataItem('Amps/Min', s.data.ampsPerMin.toFixed(3), 'A/min');
+    html += dataItem('Watts/Hour', s.data.wattsPerHour.toFixed(1), 'W/hr');
+    html += dataItem('Watts/Min', s.data.wattsPerMin.toFixed(2), 'W/min');
+    html += dataItem('mAh/Hour', s.data.mahPerHour.toFixed(0), 'mAh/hr');
+    html += dataItem('mAh/Min', s.data.mahPerMin.toFixed(1), 'mAh/min');
+    html += dataItem('Avg Voltage', s.data.voltageAvg.toFixed(2), 'V');
+    html += dataItem('Samples', s.data.samples.toLocaleString(), '');
+    html += `</div></div>`;
+  }
+
+  html += `<div class="card"><h3>Capacity & Endurance</h3><div class="data-grid">`;
+  html += dataItem('Used', mission.usedMah.toFixed(0), 'mAh');
+  html += dataItem('Used', mission.usedWh.toFixed(1), 'Wh');
+  html += dataItem('Start Voltage', mission.startVolt.toFixed(2), 'V');
+  html += dataItem('End Voltage', mission.endVolt.toFixed(2), 'V');
+  html += dataItem('Hover Endurance', mission.hoverEndurance.toFixed(1), 'min');
+  html += dataItem('Cruise Endurance', mission.cruiseEndurance.toFixed(1), 'min');
+  html += dataItem('Cruise Range', mission.cruiseRange.toFixed(2), 'km');
+  html += dataItem('Avg Climb Rate', mission.avgClimbRate.toFixed(2), 'm/s');
+  html += dataItem('Avg Descent Rate', mission.avgDescentRate.toFixed(2), 'm/s');
+  html += dataItem('Avg Cruise Speed', mission.avgCruiseSpeed.toFixed(1), 'm/s');
+  html += dataItem('Avg Cruise Speed', mission.avgCruiseSpeedKmh.toFixed(1), 'km/h');
+  html += `</div></div>`;
+
+  el.innerHTML = html;
+}
+
+function dataItem(label, value, unit) {
+  return `<div class="data-item"><div class="label">${label}</div><div class="value">${value}<span class="unit">${unit}</span></div></div>`;
+}
+
+function renderHealth(healthResults) {
+  const el = document.getElementById('tab-health');
+  if (healthResults.length === 0) {
+    el.innerHTML = '<div class="card"><p style="color:var(--text2)">No telemetry data available for health analysis.</p></div>';
+    return;
+  }
+  let html = '<div class="card">';
+  for (const h of healthResults) {
+    html += `<div class="health-item">
+      <div class="health-title"><span class="badge ${h.badge}">${h.status.toUpperCase()}</span> ${h.title}</div>
+      <div class="health-desc">${h.desc}</div>
+    </div>`;
+  }
+  html += '</div>';
+  el.innerHTML = html;
+}
+
+function renderFlightReport(report) {
+  const el = document.getElementById('tab-flight');
+  let html = '<div class="card"><h3>Flight Summary</h3><div class="report-text">';
+
+  html += `<p>Flight duration: <strong>${report.durationMin?.toFixed(1) || '?'} minutes</strong> (${report.durationSec?.toFixed(0) || '?'} seconds).</p>`;
+
+  if (report.maxAlt !== undefined) {
+    html += `<p>Max altitude: <strong>${report.maxAlt?.toFixed(1)} m</strong>. Max speed: <strong>${report.maxSpeed?.toFixed(1)} m/s (${report.maxSpeedKmh?.toFixed(1)} km/h)</strong>. Total distance: <strong>${report.totalDistKm?.toFixed(2)} km</strong>.</p>`;
+  }
+
+  if (report.startVolt !== undefined) {
+    html += `<p>Battery: <strong>${report.startVolt?.toFixed(2)}V → ${report.endVolt?.toFixed(2)}V</strong>. Total consumed: <strong>${report.totalMah?.toFixed(0)} mAh</strong> / <strong>${report.totalWh?.toFixed(1)} Wh</strong>. Max current: <strong>${report.maxCurrent?.toFixed(1)}A</strong>.</p>`;
+  }
+
+  html += `<p>Max climb rate: <strong>${report.maxClimbRate?.toFixed(1)} m/s</strong>. Max descent rate: <strong>${report.maxDescentRate?.toFixed(1)} m/s</strong>.</p>`;
+  html += `</div></div>`;
+
+  // Per-motor table
+  if (report.motors && report.motors.length > 0) {
+    html += `<div class="card"><h3>Motor Summary</h3><table>
+      <tr><th>Motor</th><th>Avg RPM</th><th>Max RPM</th><th>Avg Current</th><th>Max Current</th><th>ESC Temp</th><th>Motor Temp</th></tr>`;
+    for (const m of report.motors) {
+      html += `<tr><td>${m.id}</td><td>${m.avgRPM.toFixed(0)}</td><td>${m.maxRPM.toFixed(0)}</td><td>${m.avgCurr.toFixed(2)}A</td><td>${m.maxCurr.toFixed(2)}A</td><td>${m.maxTemp.toFixed(0)}°C</td><td>${m.maxMotorTemp.toFixed(0)}°C</td></tr>`;
+    }
+    html += '</table></div>';
+  }
+
+  // Vibration summary
+  if (report.vibeAvgX !== undefined) {
+    html += `<div class="card"><h3>Vibration Summary</h3><div class="report-text">`;
+    html += `<p>Average vibration — X: <strong>${report.vibeAvgX.toFixed(1)}</strong>, Y: <strong>${report.vibeAvgY.toFixed(1)}</strong>, Z: <strong>${report.vibeAvgZ.toFixed(1)}</strong> m/s². Total clipping events: <strong>${report.totalClips}</strong>.</p>`;
+    html += `</div></div>`;
+  }
+
+  el.innerHTML = html;
+}
+
+function renderTuning(tuningRecs) {
+  const el = document.getElementById('tab-tuning');
+  if (tuningRecs.length === 0) {
+    el.innerHTML = '<div class="card"><p style="color:var(--text2)">Not enough data for tuning recommendations.</p></div>';
+    return;
+  }
+  let html = '<div class="card">';
+  for (const t of tuningRecs) {
+    html += `<div class="tune-item">
+      <div class="tune-title">${t.title}</div>
+      <div class="tune-value">${t.value}</div>
+      <div class="tune-reason">${t.reason}</div>
+    </div>`;
+  }
+  html += '</div>';
+  el.innerHTML = html;
+}
+
+function renderCharts(data, phases) {
+  const el = document.getElementById('tab-charts');
+  el.innerHTML = `
+    <div class="chart-row">
+      <div class="card"><h3>Battery Voltage & Current</h3><div class="chart-container"><canvas id="chart-battery"></canvas></div></div>
+      <div class="card"><h3>Altitude & Climb Rate</h3><div class="chart-container"><canvas id="chart-alt"></canvas></div></div>
+    </div>
+    <div class="chart-row">
+      <div class="card"><h3>Vibration Levels</h3><div class="chart-container"><canvas id="chart-vibe"></canvas></div></div>
+      <div class="card"><h3>Motor RPM</h3><div class="chart-container"><canvas id="chart-rpm"></canvas></div></div>
+    </div>
+    <div class="chart-row">
+      <div class="card"><h3>Throttle & Speed</h3><div class="chart-container"><canvas id="chart-throttle"></canvas></div></div>
+      <div class="card"><h3>Attitude (Roll/Pitch)</h3><div class="chart-container"><canvas id="chart-att"></canvas></div></div>
+    </div>
+  `;
+
+  // Load Chart.js dynamically
+  if (typeof Chart === 'undefined') {
+    const script = document.createElement('script');
+    script.src = 'https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js';
+    script.onload = () => buildCharts(data);
+    script.onerror = () => {
+      el.innerHTML = '<div class="card"><p style="color:var(--text2)">Could not load Chart.js. Connect to the internet and reload, or charts will be unavailable.</p></div>';
+    };
+    document.head.appendChild(script);
+  } else {
+    buildCharts(data);
+  }
+}
+
+function downsample(arr, maxPoints) {
+  if (arr.length <= maxPoints) return arr;
+  const step = arr.length / maxPoints;
+  const result = [];
+  for (let i = 0; i < maxPoints; i++) {
+    result.push(arr[Math.floor(i * step)]);
+  }
+  return result;
+}
+
+function buildCharts(data) {
+  const MAX_PTS = 2000;
+  const chartOpts = (yLabel) => ({
+    responsive: true,
+    maintainAspectRatio: false,
+    animation: false,
+    plugins: { legend: { labels: { color: '#9499b3', font: { size: 11 } } } },
+    scales: {
+      x: { ticks: { color: '#9499b3', maxTicksLimit: 8 }, grid: { color: '#2e3348' } },
+      y: { title: { display: true, text: yLabel, color: '#9499b3' }, ticks: { color: '#9499b3' }, grid: { color: '#2e3348' } },
+    },
+    elements: { point: { radius: 0 }, line: { borderWidth: 1.5 } },
+  });
+
+  // Battery
+  const bat = downsample(data.BAT || [], MAX_PTS);
+  if (bat.length > 0) {
+    const t0 = bat[0].TimeUS;
+    new Chart(document.getElementById('chart-battery'), {
+      type: 'line',
+      data: {
+        labels: bat.map(b => ((b.TimeUS - t0)/1e6/60).toFixed(1)),
+        datasets: [
+          { label: 'Voltage (V)', data: bat.map(b => b.Volt), borderColor: '#5b8af5', yAxisID: 'y' },
+          { label: 'Current (A)', data: bat.map(b => b.Curr), borderColor: '#e88a39', yAxisID: 'y1' },
+        ]
+      },
+      options: {
+        ...chartOpts('Voltage (V)'),
+        scales: {
+          ...chartOpts('').scales,
+          x: { title: { display: true, text: 'Time (min)', color: '#9499b3' }, ticks: { color: '#9499b3', maxTicksLimit: 8 }, grid: { color: '#2e3348' } },
+          y: { position: 'left', title: { display: true, text: 'Volts', color: '#9499b3' }, ticks: { color: '#9499b3' }, grid: { color: '#2e3348' } },
+          y1: { position: 'right', title: { display: true, text: 'Amps', color: '#9499b3' }, ticks: { color: '#9499b3' }, grid: { display: false } },
+        }
+      }
+    });
+  }
+
+  // Altitude & climb
+  const ctun = downsample(data.CTUN || [], MAX_PTS);
+  if (ctun.length > 0) {
+    const t0 = ctun[0].TimeUS;
+    new Chart(document.getElementById('chart-alt'), {
+      type: 'line',
+      data: {
+        labels: ctun.map(c => ((c.TimeUS - t0)/1e6/60).toFixed(1)),
+        datasets: [
+          { label: 'Altitude (m)', data: ctun.map(c => c.Alt), borderColor: '#4caf87', yAxisID: 'y' },
+          { label: 'Climb Rate (m/s)', data: ctun.map(c => c.CRt), borderColor: '#e25555', yAxisID: 'y1' },
+        ]
+      },
+      options: {
+        ...chartOpts(''),
+        scales: {
+          x: { title: { display: true, text: 'Time (min)', color: '#9499b3' }, ticks: { color: '#9499b3', maxTicksLimit: 8 }, grid: { color: '#2e3348' } },
+          y: { position: 'left', title: { display: true, text: 'Alt (m)', color: '#9499b3' }, ticks: { color: '#9499b3' }, grid: { color: '#2e3348' } },
+          y1: { position: 'right', title: { display: true, text: 'm/s', color: '#9499b3' }, ticks: { color: '#9499b3' }, grid: { display: false } },
+        }
+      }
+    });
+  }
+
+  // Vibration
+  const vibe = downsample(data.VIBE || [], MAX_PTS);
+  if (vibe.length > 0) {
+    const t0 = vibe[0].TimeUS;
+    new Chart(document.getElementById('chart-vibe'), {
+      type: 'line',
+      data: {
+        labels: vibe.map(v => ((v.TimeUS - t0)/1e6/60).toFixed(1)),
+        datasets: [
+          { label: 'Vibe X', data: vibe.map(v => v.VibeX), borderColor: '#5b8af5' },
+          { label: 'Vibe Y', data: vibe.map(v => v.VibeY), borderColor: '#4caf87' },
+          { label: 'Vibe Z', data: vibe.map(v => v.VibeZ), borderColor: '#e88a39' },
+        ]
+      },
+      options: chartOpts('Vibration (m/s²)')
+    });
+  }
+
+  // Motor RPM
+  const esc = data.ESC || [];
+  if (esc.length > 0) {
+    const motorGroups = {};
+    for (const e of esc) {
+      const inst = e.Instance !== undefined ? e.Instance : 0;
+      if (!motorGroups[inst]) motorGroups[inst] = [];
+      motorGroups[inst].push(e);
+    }
+    const colors = ['#5b8af5','#4caf87','#e88a39','#e25555','#9b59b6','#1abc9c','#f39c12','#e74c3c'];
+    const datasets = [];
+    let labels = [];
+    for (const [inst, msgs] of Object.entries(motorGroups)) {
+      const ds = downsample(msgs, MAX_PTS);
+      if (labels.length === 0 && ds.length > 0) {
+        const t0 = ds[0].TimeUS;
+        labels = ds.map(m => ((m.TimeUS - t0)/1e6/60).toFixed(1));
+      }
+      datasets.push({
+        label: `Motor ${inst}`,
+        data: downsample(msgs, MAX_PTS).map(m => m.RPM),
+        borderColor: colors[inst % colors.length],
+      });
+    }
+    new Chart(document.getElementById('chart-rpm'), {
+      type: 'line', data: { labels, datasets }, options: chartOpts('RPM')
+    });
+  }
+
+  // Throttle & speed
+  const gps = downsample(data.GPS || [], MAX_PTS);
+  if (ctun.length > 0) {
+    const t0 = ctun[0].TimeUS;
+    const datasets = [
+      { label: 'Throttle (%)', data: ctun.map(c => (c.ThO||0)*100), borderColor: '#5b8af5', yAxisID: 'y' },
+    ];
+    if (gps.length > 0) {
+      datasets.push({ label: 'Speed (m/s)', data: downsample(gps, ctun.length).map(g => g.Spd), borderColor: '#4caf87', yAxisID: 'y1' });
+    }
+    new Chart(document.getElementById('chart-throttle'), {
+      type: 'line',
+      data: { labels: ctun.map(c => ((c.TimeUS - t0)/1e6/60).toFixed(1)), datasets },
+      options: {
+        ...chartOpts(''),
+        scales: {
+          x: { title: { display: true, text: 'Time (min)', color: '#9499b3' }, ticks: { color: '#9499b3', maxTicksLimit: 8 }, grid: { color: '#2e3348' } },
+          y: { position: 'left', title: { display: true, text: 'Throttle %', color: '#9499b3' }, ticks: { color: '#9499b3' }, grid: { color: '#2e3348' } },
+          y1: { position: 'right', title: { display: true, text: 'm/s', color: '#9499b3' }, ticks: { color: '#9499b3' }, grid: { display: false } },
+        }
+      }
+    });
+  }
+
+  // Attitude
+  const att = downsample(data.ATT || [], MAX_PTS);
+  if (att.length > 0) {
+    const t0 = att[0].TimeUS;
+    new Chart(document.getElementById('chart-att'), {
+      type: 'line',
+      data: {
+        labels: att.map(a => ((a.TimeUS - t0)/1e6/60).toFixed(1)),
+        datasets: [
+          { label: 'Roll (°)', data: att.map(a => a.Roll), borderColor: '#5b8af5' },
+          { label: 'Pitch (°)', data: att.map(a => a.Pitch), borderColor: '#e88a39' },
+        ]
+      },
+      options: chartOpts('Degrees')
+    });
+  }
+}
+
+
+// ============================================================
+// TXT EXPORT
+// ============================================================
+
+let _analysisResult = null; // Store for export
+
+function exportTXT() {
+  if (!_analysisResult) return;
+  const { mission, health, report, tuning, fileName } = _analysisResult;
+  let txt = '';
+  txt += `FLIGHT ANALYZER REPORT\n`;
+  txt += `======================\n`;
+  txt += `File: ${fileName}\n`;
+  txt += `Generated: ${new Date().toISOString()}\n\n`;
+
+  // Section 1
+  txt += `\n${'='.repeat(50)}\n`;
+  txt += `SECTION 1: MISSION PLANNING DATA\n`;
+  txt += `${'='.repeat(50)}\n\n`;
+  for (const [name, data] of [['HOVER', mission.hover], ['CRUISE', mission.cruise], ['CLIMB', mission.climb], ['DESCENT', mission.descent]]) {
+    txt += `--- ${name} ---\n`;
+    txt += `  Amps/Hour:   ${data.ampsPerHour.toFixed(2)} A/hr\n`;
+    txt += `  Amps/Min:    ${data.ampsPerMin.toFixed(3)} A/min\n`;
+    txt += `  Watts/Hour:  ${data.wattsPerHour.toFixed(1)} W/hr\n`;
+    txt += `  Watts/Min:   ${data.wattsPerMin.toFixed(2)} W/min\n`;
+    txt += `  mAh/Hour:    ${data.mahPerHour.toFixed(0)} mAh/hr\n`;
+    txt += `  mAh/Min:     ${data.mahPerMin.toFixed(1)} mAh/min\n`;
+    txt += `  Avg Voltage: ${data.voltageAvg.toFixed(2)} V\n`;
+    txt += `  Samples:     ${data.samples}\n\n`;
+  }
+  txt += `--- CAPACITY & ENDURANCE ---\n`;
+  txt += `  Used:             ${mission.usedMah.toFixed(0)} mAh / ${mission.usedWh.toFixed(1)} Wh\n`;
+  txt += `  Voltage:          ${mission.startVolt.toFixed(2)}V -> ${mission.endVolt.toFixed(2)}V\n`;
+  txt += `  Hover Endurance:  ${mission.hoverEndurance.toFixed(1)} min\n`;
+  txt += `  Cruise Endurance: ${mission.cruiseEndurance.toFixed(1)} min\n`;
+  txt += `  Cruise Range:     ${mission.cruiseRange.toFixed(2)} km\n`;
+  txt += `  Avg Climb Rate:   ${mission.avgClimbRate.toFixed(2)} m/s\n`;
+  txt += `  Avg Descent Rate: ${mission.avgDescentRate.toFixed(2)} m/s\n`;
+  txt += `  Avg Cruise Speed: ${mission.avgCruiseSpeed.toFixed(1)} m/s (${mission.avgCruiseSpeedKmh.toFixed(1)} km/h)\n\n`;
+
+  // Section 2
+  txt += `\n${'='.repeat(50)}\n`;
+  txt += `SECTION 2: TROUBLESHOOTING / HEALTH\n`;
+  txt += `${'='.repeat(50)}\n\n`;
+  for (const h of health) {
+    txt += `[${h.status.toUpperCase()}] ${h.title}\n`;
+    txt += `  ${h.desc}\n\n`;
+  }
+
+  // Section 3
+  txt += `\n${'='.repeat(50)}\n`;
+  txt += `SECTION 3: FULL FLIGHT REPORT\n`;
+  txt += `${'='.repeat(50)}\n\n`;
+  txt += `Duration:       ${report.durationMin?.toFixed(1) || '?'} min (${report.durationSec?.toFixed(0) || '?'} sec)\n`;
+  txt += `Max Altitude:   ${report.maxAlt?.toFixed(1) || '?'} m\n`;
+  txt += `Max Speed:      ${report.maxSpeed?.toFixed(1) || '?'} m/s (${report.maxSpeedKmh?.toFixed(1) || '?'} km/h)\n`;
+  txt += `Total Distance: ${report.totalDistKm?.toFixed(2) || '?'} km\n`;
+  txt += `Battery:        ${report.startVolt?.toFixed(2) || '?'}V -> ${report.endVolt?.toFixed(2) || '?'}V\n`;
+  txt += `Consumed:       ${report.totalMah?.toFixed(0) || '?'} mAh / ${report.totalWh?.toFixed(1) || '?'} Wh\n`;
+  txt += `Max Current:    ${report.maxCurrent?.toFixed(1) || '?'} A\n`;
+  txt += `Max Climb:      ${report.maxClimbRate?.toFixed(1) || '?'} m/s\n`;
+  txt += `Max Descent:    ${report.maxDescentRate?.toFixed(1) || '?'} m/s\n\n`;
+
+  if (report.motors) {
+    txt += `Motor Summary:\n`;
+    txt += `  ${'Motor'.padEnd(8)}${'Avg RPM'.padEnd(10)}${'Max RPM'.padEnd(10)}${'Avg A'.padEnd(10)}${'Max A'.padEnd(10)}${'ESC °C'.padEnd(10)}${'Mot °C'.padEnd(10)}\n`;
+    for (const m of report.motors) {
+      txt += `  ${String(m.id).padEnd(8)}${m.avgRPM.toFixed(0).padEnd(10)}${m.maxRPM.toFixed(0).padEnd(10)}${m.avgCurr.toFixed(2).padEnd(10)}${m.maxCurr.toFixed(2).padEnd(10)}${m.maxTemp.toFixed(0).padEnd(10)}${m.maxMotorTemp.toFixed(0).padEnd(10)}\n`;
+    }
+    txt += '\n';
+  }
+
+  if (report.vibeAvgX !== undefined) {
+    txt += `Vibration: X=${report.vibeAvgX.toFixed(1)} Y=${report.vibeAvgY.toFixed(1)} Z=${report.vibeAvgZ.toFixed(1)} m/s²  Clips: ${report.totalClips}\n\n`;
+  }
+
+  // Section 4
+  txt += `\n${'='.repeat(50)}\n`;
+  txt += `SECTION 4: TUNING RECOMMENDATIONS\n`;
+  txt += `${'='.repeat(50)}\n\n`;
+  for (const t of tuning) {
+    txt += `${t.title}: ${t.value}\n`;
+    txt += `  ${t.reason}\n\n`;
+  }
+
+  // Download
+  const blob = new Blob([txt], { type: 'text/plain' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = _analysisResult.fileName.replace(/\.(bin|BIN)$/, '') + '_report.txt';
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+
+// ============================================================
+// APP CONTROLLER
+// ============================================================
+
+const dropZone = document.getElementById('dropZone');
+const fileInput = document.getElementById('fileInput');
+const progressWrap = document.getElementById('progress-wrap');
+const progressFill = document.getElementById('progressFill');
+const progressText = document.getElementById('progress-text');
+
+dropZone.addEventListener('click', () => fileInput.click());
+dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+dropZone.addEventListener('drop', e => {
+  e.preventDefault();
+  dropZone.classList.remove('drag-over');
+  if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
+});
+fileInput.addEventListener('change', e => { if (e.target.files.length) handleFile(e.target.files[0]); });
+
+// Tab switching
+document.getElementById('tabBar').addEventListener('click', e => {
+  if (!e.target.classList.contains('tab')) return;
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+  e.target.classList.add('active');
+  document.getElementById('tab-' + e.target.dataset.tab).classList.add('active');
+});
+
+function handleFile(file) {
+  if (!file.name.toLowerCase().endsWith('.bin')) {
+    alert('Please select an ArduPilot .BIN log file.');
+    return;
+  }
+
+  progressWrap.style.display = 'block';
+  dropZone.style.display = 'none';
+  progressText.textContent = `Reading ${file.name} (${(file.size/1024/1024).toFixed(1)} MB)...`;
+  progressFill.style.width = '0%';
+
+  const reader = new FileReader();
+  reader.onprogress = (e) => {
+    if (e.lengthComputable) {
+      const pct = (e.loaded / e.total * 50)|0;
+      progressFill.style.width = pct + '%';
+      progressText.textContent = `Reading file... ${pct * 2}%`;
+    }
+  };
+  reader.onload = () => {
+    progressText.textContent = 'Parsing log...';
+    progressFill.style.width = '50%';
+    // Use setTimeout to let UI update before heavy parsing
+    setTimeout(() => {
+      try {
+        const result = parseLog(reader.result, (pct, count) => {
+          progressFill.style.width = (50 + pct/2) + '%';
+          progressText.textContent = `Parsing... ${pct}% (${count.toLocaleString()} messages)`;
+        });
+        runAnalysis(result, file.name);
+      } catch(e) {
+        progressText.textContent = 'Error: ' + e.message;
+        console.error(e);
+      }
+    }, 50);
+  };
+  reader.onerror = () => {
+    progressText.textContent = 'Error reading file.';
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+function runAnalysis(parsed, fileName) {
+  progressText.textContent = 'Analyzing flight data...';
+  progressFill.style.width = '95%';
+
+  setTimeout(() => {
+    const phases = detectPhases(parsed.data);
+    const mission = calcMissionPlanning(parsed.data, phases);
+    const health = calcTroubleshooting(parsed.data);
+    const report = calcFlightReport(parsed.data, phases, mission);
+    const tuning = calcTuning(parsed.data, phases, mission, parsed.params);
+
+    _analysisResult = { mission, health, report, tuning, fileName, parsed };
+
+    // Render
+    renderFlightInfo(parsed, fileName, report);
+    renderMissionPlanning(mission);
+    renderHealth(health);
+    renderFlightReport(report);
+    renderTuning(tuning);
+    renderCharts(parsed.data, phases);
+
+    // Show report
+    document.getElementById('landing').style.display = 'none';
+    document.getElementById('report').style.display = 'block';
+    document.getElementById('btn-new').style.display = '';
+    document.getElementById('btn-export').style.display = '';
+    progressFill.style.width = '100%';
+  }, 50);
+}
+
+function renderFlightInfo(parsed, fileName, report) {
+  const el = document.getElementById('flightInfo');
+  const typeCounts = {};
+  for (const [name, msgs] of Object.entries(parsed.data)) {
+    typeCounts[name] = msgs.length;
+  }
+  el.innerHTML = `
+    <span><strong>File:</strong> ${fileName}</span>
+    <span><strong>Size:</strong> ${(parsed.fileSize/1024/1024).toFixed(1)} MB</span>
+    <span><strong>Messages:</strong> ${parsed.msgCount.toLocaleString()}</span>
+    <span><strong>Duration:</strong> ${report.durationMin?.toFixed(1) || '?'} min</span>
+    <span><strong>Types:</strong> ${Object.keys(typeCounts).length}</span>
+  `;
+}
+
+function resetApp() {
+  _analysisResult = null;
+  document.getElementById('landing').style.display = '';
+  document.getElementById('report').style.display = 'none';
+  document.getElementById('btn-new').style.display = 'none';
+  document.getElementById('btn-export').style.display = 'none';
+  dropZone.style.display = '';
+  progressWrap.style.display = 'none';
+  fileInput.value = '';
+  // Reset tabs
+  document.querySelectorAll('.tab').forEach((t,i) => t.classList.toggle('active', i===0));
+  document.querySelectorAll('.tab-content').forEach((t,i) => t.classList.toggle('active', i===0));
+}
+</script>
+</body>
+</html>
