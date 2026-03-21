@@ -1248,6 +1248,158 @@ const EV_NAMES = {
   90:'Airspeed Primary Changed',163:'Surfaced',164:'Not Surfaced',165:'Bottomed',166:'Not Bottomed'
 };
 
+// Flight mode decoders (from mavutil.py)
+const COPTER_MODES = {
+  0:'Stabilize',1:'Acro',2:'Alt Hold',3:'Auto',4:'Guided',5:'Loiter',6:'RTL',
+  7:'Circle',8:'Position',9:'Land',10:'OF Loiter',11:'Drift',13:'Sport',14:'Flip',
+  15:'AutoTune',16:'PosHold',17:'Brake',18:'Throw',19:'Avoid ADSB',20:'Guided NoGPS',
+  21:'Smart RTL',22:'FlowHold',23:'Follow',24:'ZigZag',25:'SystemID',26:'AutoRotate',
+  27:'Auto RTL',28:'Turtle',29:'Rate Acro'
+};
+const PLANE_MODES = {
+  0:'Manual',1:'Circle',2:'Stabilize',3:'Training',4:'Acro',5:'FBWA',6:'FBWB',
+  7:'Cruise',8:'AutoTune',10:'Auto',11:'RTL',12:'Loiter',13:'Takeoff',14:'Avoid ADSB',
+  15:'Guided',16:'Initialising',17:'QStabilize',18:'QHover',19:'QLoiter',20:'QLand',
+  21:'QRTL',22:'QAutoTune',23:'QAcro',24:'Thermal',25:'Loiter AltQLand',26:'AutoLand'
+};
+const ROVER_MODES = {
+  0:'Manual',1:'Acro',2:'Learning',3:'Steering',4:'Hold',5:'Loiter',6:'Follow',
+  7:'Simple',8:'Dock',9:'Circle',10:'Auto',11:'RTL',12:'Smart RTL',15:'Guided',16:'Initialising'
+};
+
+function getModeName(modeNum, vehicleType) {
+  const map = vehicleType === 'plane' ? PLANE_MODES : vehicleType === 'rover' ? ROVER_MODES : COPTER_MODES;
+  return map[modeNum] || `Mode ${modeNum}`;
+}
+
+// Motor output balance analysis (RCOU)
+function calcMotorBalance(data) {
+  const rcou = data.RCOU || [];
+  if (rcou.length < 10) return null;
+
+  // Detect motor count from non-zero channels
+  const first = rcou[Math.floor(rcou.length / 2)]; // mid-flight sample
+  const channels = [];
+  for (let i = 1; i <= 8; i++) {
+    const key = `C${i}`;
+    if (first[key] && first[key] > 1050) channels.push(key);
+  }
+  if (channels.length < 2) return null;
+
+  // Calculate average PWM per channel during flight (PWM > 1100 = motors running)
+  const motorStats = {};
+  for (const ch of channels) {
+    const vals = rcou.filter(r => r[ch] > 1100).map(r => r[ch]);
+    if (vals.length > 0) {
+      motorStats[ch] = { avg: vals.reduce((a,b)=>a+b,0)/vals.length, max: Math.max(...vals), min: Math.min(...vals), samples: vals.length };
+    }
+  }
+
+  const chNames = Object.keys(motorStats);
+  if (chNames.length < 2) return null;
+
+  const avgs = chNames.map(ch => motorStats[ch].avg);
+  const overallAvg = avgs.reduce((a,b)=>a+b,0) / avgs.length;
+  const spread = (Math.max(...avgs) - Math.min(...avgs)) / overallAvg * 100;
+
+  let status = 'good', badge = 'badge-good';
+  if (spread > 10) { status = 'bad'; badge = 'badge-bad'; }
+  else if (spread > 5) { status = 'warn'; badge = 'badge-warn'; }
+
+  let desc = `Motor output spread: ${spread.toFixed(1)}%. `;
+  chNames.forEach(ch => {
+    const s = motorStats[ch];
+    desc += `${ch}: avg ${s.avg.toFixed(0)} PWM. `;
+  });
+  if (status === 'bad') desc += 'Significant imbalance — one motor is working much harder. Check for CG offset, damaged prop/motor, or frame flex.';
+  else if (status === 'warn') desc += 'Minor imbalance — check prop condition and CG.';
+  else desc += 'Motor outputs are well balanced.';
+
+  return { title: 'Motor Output Balance (PWM)', status, badge, desc, motorStats, channels: chNames };
+}
+
+// GPS glitch detection
+function calcGPSGlitches(data) {
+  const gps = data.GPS || [];
+  if (gps.length < 10) return null;
+
+  const glitches = [];
+  for (let i = 1; i < gps.length; i++) {
+    const dlat = (gps[i].Lat - gps[i-1].Lat) * 111139;
+    const dlng = (gps[i].Lng - gps[i-1].Lng) * 111139 * Math.cos(gps[i].Lat * Math.PI / 180);
+    const dist = Math.sqrt(dlat*dlat + dlng*dlng);
+    const dt = (gps[i].TimeUS - gps[i-1].TimeUS) / 1e6;
+    // Speed between samples
+    const speed = dt > 0 ? dist / dt : 0;
+    // A glitch: >30 m/s between GPS samples (impossible for most drones) or >10m jump in <0.5s
+    if ((speed > 30 && dt < 2) || (dist > 10 && dt < 0.5)) {
+      glitches.push({ timeUS: gps[i].TimeUS, dist: dist.toFixed(1), speed: speed.toFixed(1) });
+    }
+  }
+
+  let status = 'good', badge = 'badge-good';
+  if (glitches.length > 5) { status = 'bad'; badge = 'badge-bad'; }
+  else if (glitches.length > 0) { status = 'warn'; badge = 'badge-warn'; }
+
+  let desc = `GPS glitches detected: ${glitches.length}. `;
+  if (glitches.length > 0) {
+    const worst = glitches.reduce((a,b) => parseFloat(a.dist) > parseFloat(b.dist) ? a : b);
+    desc += `Worst: ${worst.dist}m jump at ${(worst.timeUS/1e6/60).toFixed(1)} min. `;
+  }
+  if (status === 'bad') desc += 'Multiple GPS glitches — risk of position errors and flyaway. Check GPS antenna placement, EMI shielding, and avoid flying near structures.';
+  else if (status === 'warn') desc += 'Minor GPS glitches — monitor for worsening trend.';
+  else desc += 'No GPS position glitches detected.';
+
+  return { title: 'GPS Glitch Detection', status, badge, desc, count: glitches.length };
+}
+
+// Key parameter summary
+function calcParamSummary(params, vehicleType) {
+  if (!params || Object.keys(params).length === 0) return [];
+
+  const summary = [];
+  const p = (name) => params[name];
+  const pf = (name, dec) => p(name) !== undefined ? Number(p(name)).toFixed(dec || 0) : '—';
+
+  // Aircraft
+  const frameClass = {0:'Undefined',1:'Quad',2:'Hex',3:'Octa',4:'OctaQuad',5:'Y6',6:'Heli',7:'Tri',8:'SingleCopter',9:'CoaxCopter',10:'BiCopter',11:'Heli Dual',12:'DodecaHex',13:'HeliQuad',14:'Deca'};
+  const frameType = {0:'Plus',1:'X',2:'V',3:'H',4:'V-Tail',5:'A-Tail',10:'Y6B',11:'Y6F',12:'BetaFlightX',13:'DJIX',14:'ClockwiseX',18:'BF Rev Mix'};
+
+  if (p('FRAME_CLASS') !== undefined) summary.push({ label: 'Frame', value: `${frameClass[p('FRAME_CLASS')] || p('FRAME_CLASS')} / ${frameType[p('FRAME_TYPE')] || p('FRAME_TYPE')}` });
+
+  // Battery
+  if (p('BATT_CAPACITY') !== undefined) summary.push({ label: 'Battery Capacity', value: `${pf('BATT_CAPACITY')} mAh` });
+  const cells = p('MOT_BAT_VOLT_MAX') ? Math.round(p('MOT_BAT_VOLT_MAX') / 4.2) : null;
+  if (cells) summary.push({ label: 'Battery Config', value: `${cells}S (${pf('MOT_BAT_VOLT_MIN',1)}–${pf('MOT_BAT_VOLT_MAX',1)}V)` });
+
+  // Failsafes
+  if (p('BATT_LOW_VOLT') !== undefined) summary.push({ label: 'Low Voltage Failsafe', value: `${pf('BATT_LOW_VOLT',1)}V` });
+  if (p('BATT_CRT_VOLT') !== undefined) summary.push({ label: 'Critical Voltage', value: `${pf('BATT_CRT_VOLT',1)}V` });
+  if (p('FS_THR_ENABLE') !== undefined) summary.push({ label: 'RC Failsafe', value: p('FS_THR_ENABLE') > 0 ? `Enabled (PWM < ${pf('FS_THR_VALUE')})` : 'Disabled' });
+  if (p('FS_GCS_ENABLE') !== undefined) summary.push({ label: 'GCS Failsafe', value: p('FS_GCS_ENABLE') > 0 ? 'Enabled' : 'Disabled' });
+
+  // Fence
+  if (p('FENCE_ENABLE') !== undefined) summary.push({ label: 'Geofence', value: p('FENCE_ENABLE') > 0 ? `Enabled (Alt: ${pf('FENCE_ALT_MAX')}m, Radius: ${pf('FENCE_RADIUS')}m)` : 'Disabled' });
+
+  // Navigation
+  if (p('WPNAV_SPEED') !== undefined) summary.push({ label: 'WP Speed', value: `${(p('WPNAV_SPEED')/100).toFixed(1)} m/s` });
+  if (p('WPNAV_SPEED_UP') !== undefined) summary.push({ label: 'WP Climb Speed', value: `${(p('WPNAV_SPEED_UP')/100).toFixed(1)} m/s` });
+  if (p('WPNAV_SPEED_DN') !== undefined) summary.push({ label: 'WP Descent Speed', value: `${(p('WPNAV_SPEED_DN')/100).toFixed(1)} m/s` });
+
+  // PID
+  if (p('ATC_RAT_RLL_P') !== undefined) summary.push({ label: 'Roll PID', value: `P=${pf('ATC_RAT_RLL_P',3)} I=${pf('ATC_RAT_RLL_I',3)} D=${pf('ATC_RAT_RLL_D',4)}` });
+  if (p('ATC_RAT_PIT_P') !== undefined) summary.push({ label: 'Pitch PID', value: `P=${pf('ATC_RAT_PIT_P',3)} I=${pf('ATC_RAT_PIT_I',3)} D=${pf('ATC_RAT_PIT_D',4)}` });
+  if (p('ATC_RAT_YAW_P') !== undefined) summary.push({ label: 'Yaw PID', value: `P=${pf('ATC_RAT_YAW_P',3)} I=${pf('ATC_RAT_YAW_I',3)} D=${pf('ATC_RAT_YAW_D',4)}` });
+
+  // Hover
+  if (p('MOT_THST_HOVER') !== undefined) summary.push({ label: 'Learned Hover Throttle', value: `${(p('MOT_THST_HOVER')*100).toFixed(1)}%` });
+
+  // Arming
+  if (p('ARMING_CHECK') !== undefined) summary.push({ label: 'Arming Checks', value: p('ARMING_CHECK') === 1 ? 'All enabled' : p('ARMING_CHECK') === 0 ? 'DISABLED' : `Bitmask: ${p('ARMING_CHECK')}` });
+
+  return summary;
+}
+
 function calcAlerts(data, params) {
   const alerts = [];
   const err = data.ERR || [];
@@ -1467,7 +1619,11 @@ function calcAlerts(data, params) {
     }
   }
 
-  return { errors, events, fcMessages, ekfHealth, compassCheck, powerCheck, brownoutCheck, sensorCheck };
+  // --- MOTOR BALANCE & GPS GLITCH ---
+  const motorBalance = calcMotorBalance(data);
+  const gpsGlitches = calcGPSGlitches(data);
+
+  return { errors, events, fcMessages, ekfHealth, compassCheck, powerCheck, brownoutCheck, sensorCheck, motorBalance, gpsGlitches };
 }
 
 
@@ -1571,6 +1727,8 @@ function renderHealth(healthResults, alerts) {
     if (alerts.compassCheck) allChecks.push(alerts.compassCheck);
     if (alerts.powerCheck) allChecks.push(alerts.powerCheck);
     if (alerts.sensorCheck) allChecks.push(alerts.sensorCheck);
+    if (alerts.motorBalance) allChecks.push(alerts.motorBalance);
+    if (alerts.gpsGlitches) allChecks.push(alerts.gpsGlitches);
   }
 
   if (allChecks.length === 0) {
@@ -1589,7 +1747,7 @@ function renderHealth(healthResults, alerts) {
   el.innerHTML = html;
 }
 
-function renderFlightReport(report, alerts) {
+function renderFlightReport(report, alerts, paramSummary, vehicleType) {
   const el = document.getElementById('tab-flight');
   let html = '<div class="card"><h3>Flight Summary</h3><div class="report-text">';
 
@@ -1623,6 +1781,20 @@ function renderFlightReport(report, alerts) {
     html += `</div></div>`;
   }
 
+  // Mode Timeline
+  if (report.modes && report.modes.length > 0) {
+    const t0 = report.modes[0].TimeUS || 0;
+    html += `<div class="card"><h3>Flight Mode Timeline</h3><table>
+      <tr><th>Time</th><th>Mode</th></tr>`;
+    for (const m of report.modes) {
+      const timeMin = ((m.TimeUS - t0) / 1e6 / 60).toFixed(2);
+      const modeNum = m.ModeNum !== undefined ? m.ModeNum : (m.Mode !== undefined ? m.Mode : 0);
+      const modeName = getModeName(modeNum, vehicleType);
+      html += `<tr><td>${timeMin} min</td><td>${modeName} (${modeNum})</td></tr>`;
+    }
+    html += '</table></div>';
+  }
+
   // Event Timeline
   if (alerts && alerts.events.length > 0) {
     const t0 = alerts.events[0].timeUS;
@@ -1649,6 +1821,16 @@ function renderFlightReport(report, alerts) {
     html += '</table></div>';
   }
 
+  // Parameter Summary
+  if (paramSummary && paramSummary.length > 0) {
+    html += `<div class="card"><h3>Key Parameters</h3><table>
+      <tr><th>Parameter</th><th>Value</th></tr>`;
+    for (const p of paramSummary) {
+      html += `<tr><td>${p.label}</td><td><strong>${p.value}</strong></td></tr>`;
+    }
+    html += '</table></div>';
+  }
+
   el.innerHTML = html;
 }
 
@@ -1670,7 +1852,7 @@ function renderTuning(tuningRecs) {
   el.innerHTML = html;
 }
 
-function renderCharts(data, phases) {
+function renderCharts(data, phases, vehicleType) {
   const el = document.getElementById('tab-charts');
   el.innerHTML = `
     <div class="chart-row">
@@ -1684,6 +1866,14 @@ function renderCharts(data, phases) {
     <div class="chart-row">
       <div class="card"><h3>Throttle & Speed</h3><div class="chart-container"><canvas id="chart-throttle"></canvas></div></div>
       <div class="card"><h3>Attitude (Roll/Pitch)</h3><div class="chart-container"><canvas id="chart-att"></canvas></div></div>
+    </div>
+    <div class="chart-row">
+      <div class="card"><h3>Desired vs Actual (Roll)</h3><div class="chart-container"><canvas id="chart-desroll"></canvas></div></div>
+      <div class="card"><h3>Desired vs Actual (Pitch)</h3><div class="chart-container"><canvas id="chart-despitch"></canvas></div></div>
+    </div>
+    <div class="chart-row">
+      <div class="card"><h3>Flight Path (GPS Track)</h3><div class="chart-container" style="height:400px"><canvas id="chart-path"></canvas></div></div>
+      <div class="card"><h3>Motor Outputs (PWM)</h3><div class="chart-container"><canvas id="chart-motors"></canvas></div></div>
     </div>
   `;
 
@@ -1862,6 +2052,113 @@ function buildCharts(data) {
       },
       options: chartOpts('Degrees')
     });
+
+    // Desired vs Actual Roll
+    new Chart(document.getElementById('chart-desroll'), {
+      type: 'line',
+      data: {
+        labels: att.map(a => ((a.TimeUS - t0)/1e6/60).toFixed(1)),
+        datasets: [
+          { label: 'Desired Roll', data: att.map(a => a.DesRoll), borderColor: '#5b8af5', borderDash: [5,3] },
+          { label: 'Actual Roll', data: att.map(a => a.Roll), borderColor: '#4caf87' },
+        ]
+      },
+      options: chartOpts('Degrees')
+    });
+
+    // Desired vs Actual Pitch
+    new Chart(document.getElementById('chart-despitch'), {
+      type: 'line',
+      data: {
+        labels: att.map(a => ((a.TimeUS - t0)/1e6/60).toFixed(1)),
+        datasets: [
+          { label: 'Desired Pitch', data: att.map(a => a.DesPitch), borderColor: '#e88a39', borderDash: [5,3] },
+          { label: 'Actual Pitch', data: att.map(a => a.Pitch), borderColor: '#e25555' },
+        ]
+      },
+      options: chartOpts('Degrees')
+    });
+  }
+
+  // Flight Path (2D GPS track)
+  const gpsPath = downsample(data.GPS || [], MAX_PTS);
+  if (gpsPath.length > 10) {
+    // Convert to relative meters from first point
+    const lat0 = gpsPath[0].Lat, lng0 = gpsPath[0].Lng;
+    const points = gpsPath.map(g => ({
+      x: (g.Lng - lng0) * 111139 * Math.cos(lat0 * Math.PI / 180),
+      y: (g.Lat - lat0) * 111139,
+      alt: g.Alt
+    }));
+
+    new Chart(document.getElementById('chart-path'), {
+      type: 'scatter',
+      data: {
+        datasets: [{
+          label: 'Flight Track',
+          data: points,
+          borderColor: '#5b8af5',
+          backgroundColor: points.map(p => {
+            const alt = p.alt || 0;
+            const maxAlt = Math.max(...points.map(pp => pp.alt || 0), 1);
+            const ratio = Math.min(1, alt / maxAlt);
+            return `rgba(${Math.round(91 + ratio*134)}, ${Math.round(138 - ratio*53)}, ${Math.round(245 - ratio*160)}, 0.7)`;
+          }),
+          pointRadius: 2,
+          showLine: true,
+          borderWidth: 1.5,
+          fill: false,
+        },
+        {
+          label: 'Takeoff',
+          data: [points[0]],
+          backgroundColor: '#4caf87',
+          pointRadius: 8,
+          pointStyle: 'triangle',
+        },
+        {
+          label: 'Landing',
+          data: [points[points.length-1]],
+          backgroundColor: '#e25555',
+          pointRadius: 8,
+          pointStyle: 'rect',
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        animation: false,
+        plugins: { legend: { labels: { color: '#9499b3', font: { size: 11 } } } },
+        scales: {
+          x: { title: { display: true, text: 'East-West (m)', color: '#9499b3' }, ticks: { color: '#9499b3' }, grid: { color: '#2e3348' } },
+          y: { title: { display: true, text: 'North-South (m)', color: '#9499b3' }, ticks: { color: '#9499b3' }, grid: { color: '#2e3348' } },
+        },
+        elements: { point: { radius: 2 } },
+      }
+    });
+  }
+
+  // Motor Outputs (RCOU PWM)
+  const rcou = downsample(data.RCOU || [], MAX_PTS);
+  if (rcou.length > 0) {
+    const t0 = rcou[0].TimeUS;
+    const labels = rcou.map(r => ((r.TimeUS - t0)/1e6/60).toFixed(1));
+    const colors = ['#5b8af5','#4caf87','#e88a39','#e25555','#9b59b6','#1abc9c','#f39c12','#e74c3c'];
+    const datasets = [];
+    for (let i = 1; i <= 8; i++) {
+      const key = `C${i}`;
+      if (rcou[0][key] !== undefined) {
+        const vals = rcou.map(r => r[key]);
+        if (vals.some(v => v > 1050)) {
+          datasets.push({ label: `Motor ${i}`, data: vals, borderColor: colors[i-1] });
+        }
+      }
+    }
+    if (datasets.length > 0) {
+      new Chart(document.getElementById('chart-motors'), {
+        type: 'line', data: { labels, datasets }, options: chartOpts('PWM (µs)')
+      });
+    }
   }
 }
 
@@ -2087,16 +2384,17 @@ function runAnalysis(parsed, fileName) {
     const report = calcFlightReport(parsed.data, phases, mission);
     const tuning = calcTuning(parsed.data, phases, mission, parsed.params);
     const alerts = calcAlerts(parsed.data, parsed.params);
+    const paramSummary = calcParamSummary(parsed.params, mission.vehicleType);
 
-    _analysisResult = { mission, health, report, tuning, alerts, fileName, parsed };
+    _analysisResult = { mission, health, report, tuning, alerts, paramSummary, fileName, parsed };
 
     // Render
     renderFlightInfo(parsed, fileName, report, mission.vehicleType);
     renderMissionPlanning(mission);
     renderHealth(health, alerts);
-    renderFlightReport(report, alerts);
+    renderFlightReport(report, alerts, paramSummary, mission.vehicleType);
     renderTuning(tuning);
-    renderCharts(parsed.data, phases);
+    renderCharts(parsed.data, phases, mission.vehicleType);
 
     // Show report
     document.getElementById('landing').style.display = 'none';
