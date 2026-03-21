@@ -1852,9 +1852,111 @@ function renderTuning(tuningRecs) {
   el.innerHTML = html;
 }
 
+function buildChartVerdict(data, phases) {
+  const findings = [];
+  let overallStatus = 'good'; // good, warn, bad
+
+  const bat = data.BAT || [];
+  const vibe = data.VIBE || [];
+  const att = data.ATT || [];
+  const gps = data.GPS || [];
+  const rcou = data.RCOU || [];
+  const esc = data.ESC || [];
+  const ctun = data.CTUN || [];
+  const baro = data.BARO || [];
+
+  // Battery
+  if (bat.length > 10) {
+    const volts = bat.map(b => b.Volt).filter(v => v > 0);
+    const maxV = Math.max(...volts), minV = Math.min(...volts);
+    const sagPct = maxV > 0 ? ((maxV - minV) / maxV * 100) : 0;
+    if (sagPct > 20) { findings.push({ status: 'bad', text: `Battery voltage sag is ${sagPct.toFixed(0)}% — excessive drop under load. Battery may be worn or undersized.` }); overallStatus = 'bad'; }
+    else if (sagPct > 12) { findings.push({ status: 'warn', text: `Battery voltage sag is ${sagPct.toFixed(0)}% — moderate. Battery is working hard under load.` }); if (overallStatus === 'good') overallStatus = 'warn'; }
+    else { findings.push({ status: 'good', text: `Battery voltage curve is healthy — ${sagPct.toFixed(0)}% sag, steady decline.` }); }
+  }
+
+  // Vibration
+  if (vibe.length > 10) {
+    const avgMag = vibe.reduce((s,v) => s + Math.sqrt(v.VibeX**2 + v.VibeY**2 + v.VibeZ**2), 0) / vibe.length;
+    const clips = vibe.reduce((s,v) => s + (v.Clip || 0), 0);
+    if (clips > 0) { findings.push({ status: 'bad', text: `Vibration chart shows ${clips.toLocaleString()} clipping events — accelerometer saturated. Props need balancing or replacement.` }); overallStatus = 'bad'; }
+    else if (avgMag > 30) { findings.push({ status: 'warn', text: `Vibration levels are elevated (avg ${avgMag.toFixed(0)} m/s²). Check prop balance and motor mounts.` }); if (overallStatus === 'good') overallStatus = 'warn'; }
+    else { findings.push({ status: 'good', text: `Vibration levels are low and stable — props and frame are in good condition.` }); }
+  }
+
+  // Attitude tracking
+  if (att.length > 50) {
+    const rollErrs = att.map(a => Math.abs((a.DesRoll||0) - (a.Roll||0)));
+    const pitchErrs = att.map(a => Math.abs((a.DesPitch||0) - (a.Pitch||0)));
+    const maxRoll = Math.max(...rollErrs), maxPitch = Math.max(...pitchErrs);
+    const avgRoll = rollErrs.reduce((a,b)=>a+b,0) / rollErrs.length;
+    if (maxRoll > 15 || maxPitch > 15) { findings.push({ status: 'bad', text: `Desired vs Actual shows large errors (max ${Math.max(maxRoll,maxPitch).toFixed(0)}°) — aircraft struggled to follow commands. Check PIDs, mechanical issues, or heavy wind.` }); overallStatus = 'bad'; }
+    else if (maxRoll > 8 || maxPitch > 8) { findings.push({ status: 'warn', text: `Desired vs Actual shows moderate tracking errors (max ${Math.max(maxRoll,maxPitch).toFixed(0)}°) — likely wind gusts or maneuver transitions.` }); if (overallStatus === 'good') overallStatus = 'warn'; }
+    else { findings.push({ status: 'good', text: `Desired vs Actual tracking is tight (avg ${avgRoll.toFixed(1)}° error) — PIDs are well tuned.` }); }
+  }
+
+  // Motor outputs — only check during actual flight (avg PWM > 1200 = motors spinning meaningfully)
+  const hadMotorFlight = rcou.length > 10 && rcou.filter(r => r.C1 > 1200).length > rcou.length * 0.3;
+  if (hadMotorFlight) {
+    const mid = rcou[Math.floor(rcou.length/2)];
+    const chans = [];
+    for (let i = 1; i <= 8; i++) { if (mid[`C${i}`] > 1100) chans.push(`C${i}`); }
+    if (chans.length >= 2) {
+      const avgs = chans.map(ch => {
+        const vals = rcou.filter(r => r[ch] > 1100).map(r => r[ch]);
+        return vals.length > 0 ? vals.reduce((a,b)=>a+b,0)/vals.length : 0;
+      });
+      const overall = avgs.reduce((a,b)=>a+b,0) / avgs.length;
+      const spread = overall > 0 ? (Math.max(...avgs) - Math.min(...avgs)) / overall * 100 : 0;
+      if (spread > 10) { findings.push({ status: 'bad', text: `Motor output chart shows ${spread.toFixed(0)}% PWM imbalance — one motor is working significantly harder. Indicates CG offset, damaged prop, or motor issue.` }); overallStatus = 'bad'; }
+      else if (spread > 5) { findings.push({ status: 'warn', text: `Motor output chart shows ${spread.toFixed(0)}% PWM imbalance — minor CG offset or prop wear.` }); if (overallStatus === 'good') overallStatus = 'warn'; }
+      else { findings.push({ status: 'good', text: `Motor outputs are well balanced — all motors share the load evenly.` }); }
+    }
+  }
+
+  // GPS path
+  if (gps.length > 10) {
+    let maxJump = 0;
+    for (let i = 1; i < gps.length; i++) {
+      const d = Math.sqrt(((gps[i].Lat-gps[i-1].Lat)*111139)**2 + ((gps[i].Lng-gps[i-1].Lng)*111139*Math.cos(gps[i].Lat*Math.PI/180))**2);
+      const dt = (gps[i].TimeUS - gps[i-1].TimeUS) / 1e6;
+      if (dt > 0 && dt < 2) maxJump = Math.max(maxJump, d/dt);
+    }
+    if (maxJump > 30) { findings.push({ status: 'warn', text: `Flight path shows GPS position jumps (max ${maxJump.toFixed(0)} m/s between samples) — possible GPS interference.` }); if (overallStatus === 'good') overallStatus = 'warn'; }
+    else { findings.push({ status: 'good', text: `Flight path is clean — GPS track is smooth with no position jumps.` }); }
+  }
+
+  // Altitude
+  const isCopter = ctun.length > 0 && ('CRt' in (ctun[0]||{}));
+  const altSource = isCopter ? ctun : (baro.length > 0 ? baro : []);
+  if (altSource.length > 10) {
+    const alts = altSource.map(a => a.Alt || 0);
+    const maxAlt = Math.max(...alts);
+    if (maxAlt > 0) findings.push({ status: 'good', text: `Altitude chart shows max ${maxAlt.toFixed(0)}m with controlled climb and descent.` });
+  }
+
+  return { overallStatus, findings };
+}
+
 function renderCharts(data, phases, vehicleType) {
   const el = document.getElementById('tab-charts');
-  el.innerHTML = `
+  const verdict = buildChartVerdict(data, phases);
+
+  // Verdict badge
+  const verdictColors = { good: 'badge-good', warn: 'badge-warn', bad: 'badge-bad' };
+  const verdictLabels = { good: 'ALL SYSTEMS NORMAL', warn: 'CAUTION — REVIEW FLAGGED ITEMS', bad: 'WARNING — PROBLEMS DETECTED' };
+  const verdictBorder = { good: 'var(--green)', warn: 'var(--yellow)', bad: 'var(--red)' };
+
+  let verdictHtml = `<div class="card" style="border-color:${verdictBorder[verdict.overallStatus]};margin-bottom:20px">
+    <h3 style="display:flex;align-items:center;gap:10px"><span class="badge ${verdictColors[verdict.overallStatus]}">${verdictLabels[verdict.overallStatus]}</span> Chart Analysis Summary</h3>`;
+  for (const f of verdict.findings) {
+    const icon = f.status === 'good' ? '&#10003;' : f.status === 'warn' ? '&#9888;' : '&#10007;';
+    const color = f.status === 'good' ? 'var(--green)' : f.status === 'warn' ? 'var(--yellow)' : 'var(--red)';
+    verdictHtml += `<p class="health-desc" style="margin:6px 0;padding-left:20px"><span style="color:${color};font-weight:bold">${icon}</span> ${f.text}</p>`;
+  }
+  verdictHtml += `</div>`;
+
+  el.innerHTML = verdictHtml + `
     <div class="chart-row">
       <div class="card">
         <h3>Battery Voltage & Current</h3>
