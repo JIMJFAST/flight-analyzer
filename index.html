@@ -1856,24 +1856,64 @@ function renderCharts(data, phases, vehicleType) {
   const el = document.getElementById('tab-charts');
   el.innerHTML = `
     <div class="chart-row">
-      <div class="card"><h3>Battery Voltage & Current</h3><div class="chart-container"><canvas id="chart-battery"></canvas></div></div>
-      <div class="card"><h3>Altitude & Climb Rate</h3><div class="chart-container"><canvas id="chart-alt"></canvas></div></div>
+      <div class="card">
+        <h3>Battery Voltage & Current</h3>
+        <p class="health-desc" style="margin-bottom:8px">Blue = battery voltage (should decline steadily, not drop sharply). Orange = current draw in amps (spikes = high-power maneuvers). A sudden voltage drop under load means the battery is sagging — if it drops below low-voltage threshold, the aircraft will trigger a failsafe.</p>
+        <div class="chart-container"><canvas id="chart-battery"></canvas></div>
+      </div>
+      <div class="card">
+        <h3>Altitude & Climb Rate</h3>
+        <p class="health-desc" style="margin-bottom:8px">Green = altitude above takeoff point in meters. Red = climb rate (positive = climbing, negative = descending). Flat sections = level flight or hover. Look for unexpected altitude changes that weren't commanded.</p>
+        <div class="chart-container"><canvas id="chart-alt"></canvas></div>
+      </div>
     </div>
     <div class="chart-row">
-      <div class="card"><h3>Vibration Levels</h3><div class="chart-container"><canvas id="chart-vibe"></canvas></div></div>
-      <div class="card"><h3>Motor RPM</h3><div class="chart-container"><canvas id="chart-rpm"></canvas></div></div>
+      <div class="card">
+        <h3>Vibration Levels</h3>
+        <p class="health-desc" style="margin-bottom:8px">X/Y/Z axis vibration in m/s&sup2;. Healthy = under 30. Warning = 30-60. Bad = over 60. High vibration causes GPS and barometer errors. Common causes: unbalanced props, loose motor mounts, damaged frame. If vibration increases over time, something is loosening.</p>
+        <div class="chart-container"><canvas id="chart-vibe"></canvas></div>
+      </div>
+      <div class="card">
+        <h3>Motor RPM</h3>
+        <p class="health-desc" style="margin-bottom:8px">Per-motor RPM from ESC telemetry (if available). All motors should track closely together. If one motor runs consistently faster, it's compensating for a problem — bad prop, damaged motor, or CG offset. Large sudden divergence = motor or prop failure.</p>
+        <div class="chart-container"><canvas id="chart-rpm"></canvas></div>
+      </div>
     </div>
     <div class="chart-row">
-      <div class="card"><h3>Throttle & Speed</h3><div class="chart-container"><canvas id="chart-throttle"></canvas></div></div>
-      <div class="card"><h3>Attitude (Roll/Pitch)</h3><div class="chart-container"><canvas id="chart-att"></canvas></div></div>
+      <div class="card">
+        <h3>Throttle & Speed</h3>
+        <p class="health-desc" style="margin-bottom:8px">Blue = throttle output (0-100%). Green = ground speed in m/s. In hover, speed should be near zero with steady throttle. In cruise, speed increases with throttle. If throttle is high but speed is low, the aircraft is fighting wind or has a drag problem.</p>
+        <div class="chart-container"><canvas id="chart-throttle"></canvas></div>
+      </div>
+      <div class="card">
+        <h3>Attitude (Roll/Pitch)</h3>
+        <p class="health-desc" style="margin-bottom:8px">Roll = left/right tilt. Pitch = forward/back tilt. In degrees from level. During hover, both should stay near zero. During cruise, pitch tilts forward (negative). Sustained non-zero roll in hover = wind or CG offset. Erratic movement = turbulence or PID issues.</p>
+        <div class="chart-container"><canvas id="chart-att"></canvas></div>
+      </div>
     </div>
     <div class="chart-row">
-      <div class="card"><h3>Desired vs Actual (Roll)</h3><div class="chart-container"><canvas id="chart-desroll"></canvas></div></div>
-      <div class="card"><h3>Desired vs Actual (Pitch)</h3><div class="chart-container"><canvas id="chart-despitch"></canvas></div></div>
+      <div class="card">
+        <h3>Desired vs Actual (Roll)</h3>
+        <p class="health-desc" style="margin-bottom:8px">Dashed = what the flight controller WANTED. Solid = what the aircraft ACTUALLY did. They should track closely. A persistent gap means the PIDs can't keep up — the aircraft is sluggish or fighting a mechanical issue. Large gaps during maneuvers are normal (the aircraft takes time to respond).</p>
+        <div class="chart-container"><canvas id="chart-desroll"></canvas></div>
+      </div>
+      <div class="card">
+        <h3>Desired vs Actual (Pitch)</h3>
+        <p class="health-desc" style="margin-bottom:8px">Same as roll but for pitch axis (forward/back). Watch for: oscillation (lines crossing rapidly = PIDs too aggressive), lag (actual trails desired = PIDs too low), or offset (actual consistently different from desired = trim or CG issue).</p>
+        <div class="chart-container"><canvas id="chart-despitch"></canvas></div>
+      </div>
     </div>
     <div class="chart-row">
-      <div class="card"><h3>Flight Path (GPS Track)</h3><div class="chart-container" style="height:400px"><canvas id="chart-path"></canvas></div></div>
-      <div class="card"><h3>Motor Outputs (PWM)</h3><div class="chart-container"><canvas id="chart-motors"></canvas></div></div>
+      <div class="card">
+        <h3>Flight Path (GPS Track)</h3>
+        <p class="health-desc" style="margin-bottom:8px">Top-down view of the flight in meters from takeoff. Color shifts with altitude (brighter = higher). Green triangle = takeoff, red square = landing. A clean track means good GPS. Jagged or jumpy tracks indicate GPS issues. The path should match what was planned.</p>
+        <div class="chart-container" style="height:400px"><canvas id="chart-path"></canvas></div>
+      </div>
+      <div class="card">
+        <h3>Motor Outputs (PWM)</h3>
+        <p class="health-desc" style="margin-bottom:8px">Raw PWM signal to each motor (1000=off, 2000=full power). All motors should follow similar patterns. If one motor consistently runs higher PWM than others, it's working harder to compensate for a problem (bad prop, CG offset, or motor issue). Sudden divergence = failure event.</p>
+        <div class="chart-container"><canvas id="chart-motors"></canvas></div>
+      </div>
     </div>
   `;
 
