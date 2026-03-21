@@ -319,12 +319,14 @@ tr:last-child td { border-bottom: none; }
     <div class="tab" data-tab="health">Troubleshooting</div>
     <div class="tab" data-tab="flight">Flight Report</div>
     <div class="tab" data-tab="tuning">Tuning</div>
+    <div class="tab" data-tab="environment">Environment</div>
     <div class="tab" data-tab="charts">Charts</div>
   </div>
   <div class="tab-content active" id="tab-mission"></div>
   <div class="tab-content" id="tab-health"></div>
   <div class="tab-content" id="tab-flight"></div>
   <div class="tab-content" id="tab-tuning"></div>
+  <div class="tab-content" id="tab-environment"></div>
   <div class="tab-content" id="tab-charts"></div>
 </div>
 
@@ -426,7 +428,7 @@ function parseLog(buffer, onProgress) {
     'MOTB','BARO','MODE','PARM','MSG','RCIN','POWR',
     'BCL','IMU','EV','VER','PSCD','CMD',
     'NTUN','ARSP','PIDR','PIDP','STAT',
-    'ERR','XKF4','NKF4','MAG','ARM'
+    'ERR','XKF4','NKF4','MAG','ARM','HEAT'
   ]);
 
   // First, register FMT type 128
@@ -1938,6 +1940,178 @@ function buildChartVerdict(data, phases) {
   return { overallStatus, findings };
 }
 
+function calcEnvironment(data, params) {
+  const baro = data.BARO || [];
+  const gps = data.GPS || [];
+  const imu = data.IMU || [];
+  const heat = data.HEAT || [];
+  params = params || {};
+
+  const env = {};
+
+  // Barometric data
+  if (baro.length > 0) {
+    const baro0 = baro.filter(b => (b.I === 0 || b.I === undefined));
+    const src = baro0.length > 0 ? baro0 : baro;
+    const temps = src.map(b => b.Temp).filter(v => v > -50);
+    const press = src.map(b => b.Press).filter(v => v > 0);
+    const alts = src.map(b => b.Alt);
+
+    env.baroTempMin = Math.min(...temps);
+    env.baroTempMax = Math.max(...temps);
+    env.baroTempAvg = temps.reduce((a,b)=>a+b,0) / temps.length;
+    env.baroPressMin = Math.min(...press);
+    env.baroPressMax = Math.max(...press);
+    env.baroPressAvg = press.reduce((a,b)=>a+b,0) / press.length;
+    env.baroAltMin = Math.min(...alts);
+    env.baroAltMax = Math.max(...alts);
+    env.gndTemp = src[0].GndTemp || null;
+
+    // Ground pressure from params (more accurate)
+    env.gndPress = params['BARO1_GND_PRESS'] || env.baroPressMax;
+  }
+
+  // GPS altitude (AMSL)
+  if (gps.length > 0) {
+    const gpsAlts = gps.map(g => g.Alt).filter(v => v > 0);
+    if (gpsAlts.length > 0) {
+      env.gpsAltStart = gpsAlts[0];
+      env.gpsAltMax = Math.max(...gpsAlts);
+      env.gpsAltMin = Math.min(...gpsAlts);
+      env.fieldElevM = gpsAlts[0];
+      env.fieldElevFt = gpsAlts[0] * 3.28084;
+    }
+  }
+
+  // IMU temperature
+  if (imu.length > 0) {
+    const imu0 = imu.filter(i => (i.I === 0 || i.I === undefined));
+    const src = imu0.length > 0 ? imu0 : imu;
+    const imuTemps = src.map(i => i.T).filter(v => v > -50 && v < 100);
+    if (imuTemps.length > 0) {
+      env.imuTempMin = Math.min(...imuTemps);
+      env.imuTempMax = Math.max(...imuTemps);
+      env.imuTempAvg = imuTemps.reduce((a,b)=>a+b,0) / imuTemps.length;
+    }
+  }
+
+  // Heater (CubeOrange has IMU heater)
+  if (heat.length > 0) {
+    env.heaterTarget = heat[0].Targ;
+    env.heaterTempMin = Math.min(...heat.map(h => h.Temp));
+    env.heaterTempMax = Math.max(...heat.map(h => h.Temp));
+    env.heaterAvgOutput = heat.reduce((s,h) => s + (h.Out||0), 0) / heat.length;
+  }
+
+  // Calculate density altitude
+  if (env.baroPressAvg && env.baroTempAvg !== undefined && env.fieldElevFt) {
+    const pressHpa = env.baroPressAvg / 100;
+    const qnhInHg = pressHpa * 0.02953;
+    env.pressureAltFt = env.fieldElevFt + ((29.92 - qnhInHg) * 1000);
+    env.isaTemp = 15 - (env.pressureAltFt * 0.00198);
+    env.isaDev = env.baroTempAvg - env.isaTemp;
+    env.densityAltFt = env.pressureAltFt + (env.isaDev * 120);
+    env.densityAltM = env.densityAltFt * 0.3048;
+
+    // DA performance factor (same as your battery calculator)
+    env.daFactor = Math.max(0.5, 1 - (env.densityAltFt / 1000) * 0.03);
+    env.daPerfPct = env.daFactor * 100;
+
+    // Air density
+    const tempK = env.baroTempAvg + 273.15;
+    env.airDensity = (pressHpa * 100) / (287.05 * tempK);
+    env.airDensityPct = (env.airDensity / 1.225) * 100; // % of sea level standard
+  }
+
+  // Field elevation from params
+  if (params['BARO_FIELD_ELV'] && params['BARO_FIELD_ELV'] > 0) {
+    env.configFieldElev = params['BARO_FIELD_ELV'];
+  }
+
+  return env;
+}
+
+function renderEnvironment(env) {
+  const el = document.getElementById('tab-environment');
+  let html = '';
+
+  // Density Altitude card (most important)
+  if (env.densityAltFt !== undefined) {
+    let daStatus = 'good', daBadge = 'badge-good', daLabel = 'NORMAL';
+    if (env.densityAltFt > 5000) { daStatus = 'bad'; daBadge = 'badge-bad'; daLabel = 'HIGH DA — REDUCED PERFORMANCE'; }
+    else if (env.densityAltFt > 3000) { daStatus = 'warn'; daBadge = 'badge-warn'; daLabel = 'ELEVATED DA'; }
+    else { daLabel = 'LOW DA — GOOD PERFORMANCE'; }
+
+    html += `<div class="card" style="border-color:${daStatus === 'good' ? 'var(--green)' : daStatus === 'warn' ? 'var(--yellow)' : 'var(--red)'}">
+      <h3><span class="badge ${daBadge}">${daLabel}</span> Density Altitude</h3>
+      <div class="data-grid">
+        ${dataItem('Density Altitude', env.densityAltFt.toFixed(0), 'ft')}
+        ${dataItem('Density Altitude', env.densityAltM.toFixed(0), 'm')}
+        ${dataItem('Pressure Altitude', env.pressureAltFt.toFixed(0), 'ft')}
+        ${dataItem('ISA Temp (std)', env.isaTemp.toFixed(1), '°C')}
+        ${dataItem('ISA Deviation', (env.isaDev > 0 ? '+' : '') + env.isaDev.toFixed(1), '°C')}
+        ${dataItem('Performance Factor', env.daPerfPct.toFixed(1), '%')}
+        ${dataItem('Air Density', env.airDensity.toFixed(3), 'kg/m³')}
+        ${dataItem('Air Density', env.airDensityPct.toFixed(1), '% of SL')}
+      </div>
+      <p class="health-desc" style="margin-top:12px">Density altitude affects motor thrust and battery efficiency. At ${env.densityAltFt.toFixed(0)} ft DA, your motors produce ~${env.daPerfPct.toFixed(0)}% of sea-level thrust. ${env.densityAltFt > 3000 ? 'Plan for reduced endurance and climb rate.' : 'Conditions are favorable for flight.'}</p>
+    </div>`;
+  }
+
+  // Field Elevation & Location
+  if (env.fieldElevM !== undefined) {
+    html += `<div class="card"><h3>Field Elevation & Location</h3><div class="data-grid">
+      ${dataItem('Field Elevation (GPS)', env.fieldElevM.toFixed(0), 'm AMSL')}
+      ${dataItem('Field Elevation', env.fieldElevFt.toFixed(0), 'ft AMSL')}
+      ${dataItem('Max GPS Altitude', env.gpsAltMax.toFixed(0), 'm AMSL')}
+      ${dataItem('Max AGL (baro)', env.baroAltMax.toFixed(0), 'm')}
+      ${env.configFieldElev ? dataItem('Configured Elev (param)', env.configFieldElev.toFixed(0), 'm') : ''}
+    </div></div>`;
+  }
+
+  // Temperature
+  html += `<div class="card"><h3>Temperature</h3><div class="data-grid">`;
+  if (env.baroTempAvg !== undefined) {
+    html += dataItem('Baro Sensor Temp (avg)', env.baroTempAvg.toFixed(1), '°C');
+    html += dataItem('Baro Sensor Temp', ((env.baroTempAvg * 9/5) + 32).toFixed(1), '°F');
+    html += dataItem('Sensor Temp Range', env.baroTempMin.toFixed(1) + ' – ' + env.baroTempMax.toFixed(1), '°C');
+  }
+  if (env.gndTemp !== null && env.gndTemp !== undefined) {
+    html += dataItem('Ground Temp (baro cal)', env.gndTemp.toFixed(1), '°C');
+  }
+  if (env.imuTempAvg !== undefined) {
+    html += dataItem('IMU Temp (avg)', env.imuTempAvg.toFixed(1), '°C');
+    html += dataItem('IMU Temp Range', `${env.imuTempMin.toFixed(1)} – ${env.imuTempMax.toFixed(1)}`, '°C');
+  }
+  if (env.heaterTarget !== undefined) {
+    html += dataItem('IMU Heater Target', env.heaterTarget.toFixed(0), '°C');
+    html += dataItem('Heater Output (avg)', env.heaterAvgOutput.toFixed(0), '%');
+  }
+  html += `</div></div>`;
+
+  // Pressure
+  if (env.baroPressAvg !== undefined) {
+    const pressHpa = env.baroPressAvg / 100;
+    const pressInHg = pressHpa * 0.02953;
+    const gndPressHpa = env.gndPress / 100;
+    html += `<div class="card"><h3>Barometric Pressure</h3><div class="data-grid">
+      ${dataItem('Avg Pressure', pressHpa.toFixed(1), 'hPa')}
+      ${dataItem('Avg Pressure', pressInHg.toFixed(2), 'inHg')}
+      ${dataItem('Min Pressure (max alt)', (env.baroPressMin/100).toFixed(1), 'hPa')}
+      ${dataItem('Ground Pressure', gndPressHpa.toFixed(1), 'hPa')}
+      ${dataItem('Pressure Range', ((env.baroPressMax - env.baroPressMin)/100).toFixed(1), 'hPa')}
+    </div>
+    <p class="health-desc" style="margin-top:12px">Standard sea-level pressure is 1013.25 hPa / 29.92 inHg. Current conditions: ${pressHpa > 1013 ? 'high pressure (good weather)' : pressHpa > 1000 ? 'near standard' : 'low pressure (possible weather system)'}.</p>
+    </div>`;
+  }
+
+  if (!html) {
+    html = '<div class="card"><p class="health-desc">No environmental data available in this log.</p></div>';
+  }
+
+  el.innerHTML = html;
+}
+
 function renderCharts(data, phases, vehicleType) {
   const el = document.getElementById('tab-charts');
   const verdict = buildChartVerdict(data, phases);
@@ -2536,6 +2710,8 @@ function runAnalysis(parsed, fileName) {
     renderHealth(health, alerts);
     renderFlightReport(report, alerts, paramSummary, mission.vehicleType);
     renderTuning(tuning);
+    const environment = calcEnvironment(parsed.data, parsed.params);
+    renderEnvironment(environment);
     renderCharts(parsed.data, phases, mission.vehicleType);
 
     // Show report
