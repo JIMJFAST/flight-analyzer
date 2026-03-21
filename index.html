@@ -2005,7 +2005,8 @@ function calcEnvironment(data, params) {
 
   // Calculate density altitude
   if (env.baroPressAvg && env.baroTempAvg !== undefined && env.fieldElevFt) {
-    const pressHpa = env.baroPressAvg / 100;
+    // Use ground pressure (max pressure = at lowest altitude) for ground-reference DA
+    const pressHpa = (env.gndPress || env.baroPressMax) / 100;
     const qnhInHg = pressHpa * 0.02953;
     env.pressureAltFt = env.fieldElevFt + ((29.92 - qnhInHg) * 1000);
     env.isaTemp = 15 - (env.pressureAltFt * 0.00198);
@@ -2055,6 +2056,7 @@ function renderEnvironment(env) {
         ${dataItem('Air Density', env.airDensityPct.toFixed(1), '% of SL')}
       </div>
       <p class="health-desc" style="margin-top:12px">Density altitude affects motor thrust and battery efficiency. At ${env.densityAltFt.toFixed(0)} ft DA, your motors produce ~${env.daPerfPct.toFixed(0)}% of sea-level thrust. ${env.densityAltFt > 3000 ? 'Plan for reduced endurance and climb rate.' : 'Conditions are favorable for flight.'}</p>
+      <p class="health-desc" style="margin-top:8px;color:var(--yellow)"><strong>Note:</strong> DA is calculated from the barometric sensor temperature (${env.baroTempAvg?.toFixed(0)}°C), which is the FC enclosure temp — NOT outside air temperature. Flight controllers with IMU heaters (CubeOrange, etc.) read ~45°C regardless of weather. The actual DA may be significantly lower than shown. For accurate DA, use an external OAT probe or enter the actual air temperature into your mission calculator.</p>
     </div>`;
   }
 
